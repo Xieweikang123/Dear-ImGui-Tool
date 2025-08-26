@@ -37,21 +37,29 @@ else()
     endif()
 endif()
 
+# App sources
+set(APP_SOURCES
+    main.cpp
+    src/replace_tool.cpp
+    src/vs_inspector.cpp
+)
+
 # Create executable (use WinMain entry on Windows+D3D11)
 if(WIN32 AND USE_D3D11)
     add_executable(${PROJECT_NAME} WIN32
-        main.cpp
+        ${APP_SOURCES}
         ${IMGUI_SOURCES}
     )
 else()
     add_executable(${PROJECT_NAME}
-        main.cpp
+        ${APP_SOURCES}
         ${IMGUI_SOURCES}
     )
 endif()
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
