@@ -43,6 +43,31 @@ namespace VSInspector
     }
 
     // Helpers to flatten COM interaction and reduce nesting
+    static bool ParsePidFromRotName(const std::wstring& displayName, DWORD& pidOut)
+    {
+        pidOut = 0;
+        // Preferred: !VisualStudio.DTE.x.y:PID
+        size_t colon = displayName.rfind(L':');
+        if (colon != std::wstring::npos && colon + 1 < displayName.size())
+        {
+            try {
+                unsigned long v = std::stoul(displayName.substr(colon + 1));
+                pidOut = (DWORD)v;
+                return pidOut != 0;
+            } catch (...) {}
+        }
+        // Fallback: last token after dot may be pid on some installs
+        size_t dot = displayName.rfind(L'.');
+        if (dot != std::wstring::npos && dot + 1 < displayName.size())
+        {
+            try {
+                unsigned long v = std::stoul(displayName.substr(dot + 1));
+                pidOut = (DWORD)v;
+                return pidOut != 0;
+            } catch (...) {}
+        }
+        return false;
+    }
     static bool GetPidFromDTE(IDispatch* pDisp, DWORD& pidOut)
     {
         pidOut = 0;
@@ -68,15 +93,43 @@ namespace VSInspector
             if (SUCCEEDED(pMainWin->GetIDsOfNames(IID_NULL, &nameHWnd, 1, LOCALE_USER_DEFAULT, &dispidHWnd)))
             {
                 VARIANT resultHwnd; VariantInit(&resultHwnd);
+                auto readPidFromVariant = [&](const VARIANT& v)->bool {
+                    INT_PTR hwndInt = 0;
+                    switch (v.vt)
+                    {
+                        case VT_I2: hwndInt = (INT_PTR)v.iVal; break;
+                        case VT_I4: hwndInt = (INT_PTR)v.lVal; break;
+                        case VT_UI4: hwndInt = (INT_PTR)v.ulVal; break;
+                        case VT_I8: hwndInt = (INT_PTR)v.llVal; break;
+                        case VT_UI8: hwndInt = (INT_PTR)v.ullVal; break;
+                        default:
+                            AppendLog(std::string("[vs] HWnd VARIANT vt=") + std::to_string((int)v.vt));
+                            break;
+                    }
+                    if (hwndInt)
+                    {
+                        GetWindowThreadProcessId((HWND)hwndInt, &pidOut);
+                        if (pidOut != 0)
+                        {
+                            AppendLog(std::string("[vs] DTE hwnd=") + std::to_string((long long)hwndInt) + std::string(" pid=") + std::to_string((unsigned long)pidOut));
+                            return true;
+                        }
+                    }
+                    return false;
+                };
                 if (SUCCEEDED(pMainWin->Invoke(dispidHWnd, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultHwnd, NULL, NULL)))
                 {
-                    LONG hwndVal = 0;
-                    if (resultHwnd.vt == VT_I4) hwndVal = resultHwnd.lVal; else if (resultHwnd.vt == VT_I2) hwndVal = resultHwnd.iVal;
-                    if (hwndVal)
+                    ok = readPidFromVariant(resultHwnd);
+                    // short retry if first read fails
+                    if (!ok)
                     {
-                        GetWindowThreadProcessId((HWND)(INT_PTR)hwndVal, &pidOut);
-                        ok = (pidOut != 0);
-                        if (ok) AppendLog(std::string("[vs] DTE hwnd=") + std::to_string((long)hwndVal) + std::string(" pid=") + std::to_string((unsigned long)pidOut));
+                        Sleep(80);
+                        VariantClear(&resultHwnd);
+                        VariantInit(&resultHwnd);
+                        if (SUCCEEDED(pMainWin->Invoke(dispidHWnd, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultHwnd, NULL, NULL)))
+                        {
+                            ok = readPidFromVariant(resultHwnd);
+                        }
                     }
                 }
                 VariantClear(&resultHwnd);
@@ -209,19 +262,32 @@ namespace VSInspector
         VariantClear(&resultActiveDoc);
     }
 
-    static void ProcessDteMoniker(IRunningObjectTable* pRot, IMoniker* pMoniker, std::vector<VSInstance>& found)
+    static void ProcessDteMoniker(IRunningObjectTable* pRot, IMoniker* pMoniker, std::vector<VSInstance>& found, DWORD pidHint)
     {
         IUnknown* pUnk = NULL; HRESULT hrGetObj = pRot->GetObject(pMoniker, &pUnk);
         if (FAILED(hrGetObj) || !pUnk) { AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj)); return; }
         IDispatch* pDisp = NULL; HRESULT hrQI = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
         if (FAILED(hrQI) || !pDisp) { AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI)); pUnk->Release(); return; }
 
-        DWORD pid = 0; if (!GetPidFromDTE(pDisp, pid) || pid == 0) { pDisp->Release(); pUnk->Release(); return; }
-        std::string sln; (void)TryGetSolutionFullName(pDisp, sln);
+        DWORD pid = 0; 
+        if (!GetPidFromDTE(pDisp, pid) || pid == 0) {
+            if (pidHint != 0) {
+                pid = pidHint;
+                AppendLog(std::string("[vs] Using pidHint from ROT: ") + std::to_string((unsigned long)pid));
+            } else {
+                AppendLog("[vs] GetPidFromDTE failed and no pidHint"); pDisp->Release(); pUnk->Release(); return;
+            }
+        }
+        std::string sln; bool gotSln = TryGetSolutionFullName(pDisp, sln);
+        AppendLog(std::string("[vs] TryGetSolutionFullName result=") + (gotSln?"true":"false") + std::string(" sln=") + (sln.empty()?"<empty>":sln));
         if (sln.empty()) { TryFillFromActiveDocument(pDisp, pid, found, sln); }
         if (!sln.empty())
         {
             for (auto& inst : found) { if (inst.pid == pid) { inst.solutionPath = sln; AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath")); } }
+        }
+        else
+        {
+            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" no solution resolved"));
         }
         pDisp->Release(); pUnk->Release();
     }
@@ -326,8 +392,12 @@ namespace VSInspector
                         if (dn.find(L"!VisualStudio.DTE") == 0)
                         {
                             AppendLog(std::string("[vs] ROT item: ") + WideToUtf8(dn));
+                            DWORD pidHint = 0; (void)ParsePidFromRotName(dn, pidHint);
+                            if (pidHint != 0) AppendLog(std::string("[vs] pidHint from ROT=") + std::to_string((unsigned long)pidHint));
+                            AppendLog("[vs] ProcessDteMoniker: begin");
                             // Use flattened helper to avoid deep nesting
-                            ProcessDteMoniker(pRot, pMoniker, found);
+                            ProcessDteMoniker(pRot, pMoniker, found, pidHint);
+                            AppendLog(std::string("[vs] ProcessDteMoniker: end; instances now=") + std::to_string((int)found.size()));
                             if (displayName) CoTaskMemFree(displayName);
                             if (pMoniker) pMoniker->Release();
                             continue;
