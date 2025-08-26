@@ -14,6 +14,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <shobjidl.h>
+#include <tlhelp32.h>
+#include <unordered_map>
 #endif
 
 namespace fs = std::filesystem;
@@ -415,6 +417,131 @@ static void DrawUI()
     ImGui::End();
 }
 
+#ifdef _WIN32
+struct VSInstance
+{
+    DWORD pid = 0;
+    std::string exePath;
+    std::string windowTitle;
+};
+
+static std::vector<VSInstance> g_vsList;
+static std::mutex g_vsMutexVS;
+
+static void RefreshVSInstances()
+{
+    std::vector<VSInstance> found;
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE)
+        return;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+    if (Process32First(hSnap, &pe))
+    {
+        do
+        {
+            std::string exeU;
+#ifdef UNICODE
+            exeU = WideToUtf8(pe.szExeFile);
+#else
+            exeU = pe.szExeFile;
+#endif
+            std::string exeLower = exeU;
+            std::transform(exeLower.begin(), exeLower.end(), exeLower.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+            if (exeLower == std::string("devenv.exe"))
+            {
+                VSInstance inst;
+                inst.pid = pe.th32ProcessID;
+
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+                if (hProc)
+                {
+                    char buf[MAX_PATH];
+                    DWORD sz = (DWORD)sizeof(buf);
+                    if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
+                        inst.exePath.assign(buf, sz);
+                    CloseHandle(hProc);
+                }
+                found.push_back(inst);
+            }
+        } while (Process32Next(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+
+    std::unordered_map<DWORD, std::string> pidToTitle;
+    EnumWindows([](HWND hWnd, LPARAM lParam)->BOOL{
+        if (!IsWindowVisible(hWnd)) return TRUE;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hWnd, &pid);
+        if (pid == 0) return TRUE;
+        char title[512];
+        int len = GetWindowTextA(hWnd, title, (int)sizeof(title));
+        if (len > 0)
+        {
+            auto* mapPtr = reinterpret_cast<std::unordered_map<DWORD, std::string>*>(lParam);
+            // Prefer longest title per PID
+            auto it = mapPtr->find(pid);
+            if (it == mapPtr->end() || (int)it->second.size() < len)
+                (*mapPtr)[pid] = std::string(title, len);
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&pidToTitle));
+
+    for (auto& inst : found)
+    {
+        auto it = pidToTitle.find(inst.pid);
+        if (it != pidToTitle.end()) inst.windowTitle = it->second;
+    }
+
+    std::lock_guard<std::mutex> lock(g_vsMutexVS);
+    g_vsList.swap(found);
+}
+
+static void DrawVSUI()
+{
+    ImGui::Begin("Running Visual Studio");
+    if (ImGui::Button("Refresh"))
+    {
+        RefreshVSInstances();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Auto-Refresh"))
+    {
+        RefreshVSInstances();
+    }
+
+    std::vector<VSInstance> local;
+    {
+        std::lock_guard<std::mutex> lock(g_vsMutexVS);
+        local = g_vsList;
+    }
+
+    ImGui::Text("Found %d instance(s)", (int)local.size());
+    ImGui::Separator();
+    ImGui::BeginChild("vslist", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+    for (const auto& inst : local)
+    {
+        ImGui::Text("PID: %lu", (unsigned long)inst.pid);
+        if (!inst.windowTitle.empty())
+            ImGui::TextDisabled("Title: %s", inst.windowTitle.c_str());
+        if (!inst.exePath.empty())
+            ImGui::TextDisabled("Path: %s", inst.exePath.c_str());
+        ImGui::Separator();
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+#else
+static void DrawVSUI()
+{
+    ImGui::Begin("Running Visual Studio");
+    ImGui::TextDisabled("Windows only");
+    ImGui::End();
+}
+#endif
+
 #ifdef IMGUI_USE_D3D11
 // Win32 + DirectX11 backend
 #include "imgui_impl_win32.h"
@@ -595,6 +722,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         ImGui::NewFrame();
 
         DrawUI();
+        DrawVSUI();
 
         ImGui::Render();
         const float clear_color_with_alpha[4] = { 0.45f, 0.55f, 0.60f, 1.00f };
@@ -704,6 +832,7 @@ int main(int, char**)
         ImGui::NewFrame();
 
         DrawUI();
+        DrawVSUI();
 
         ImGui::Render();
         int display_w, display_h; glfwGetFramebufferSize(window, &display_w, &display_h);
