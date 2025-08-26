@@ -9,6 +9,10 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#include <shobjidl.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -50,6 +54,44 @@ static std::string ReplaceAll(std::string input, const std::string& from, const 
     }
     return input;
 }
+
+#ifdef _WIN32
+static std::string WideToUtf8(const std::wstring& w)
+{
+    if (w.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
+static bool PickFolderWin32(std::string& outFolder)
+{
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool needUninit = SUCCEEDED(hr);
+    IFileDialog* pfd = NULL;
+    HRESULT h = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+    if (FAILED(h)) { if (needUninit) CoUninitialize(); return false; }
+    DWORD opts = 0; pfd->GetOptions(&opts); pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    h = pfd->Show(NULL);
+    if (FAILED(h)) { pfd->Release(); if (needUninit) CoUninitialize(); return false; }
+    IShellItem* psi = NULL;
+    h = pfd->GetResult(&psi);
+    if (FAILED(h) || !psi) { if (psi) psi->Release(); pfd->Release(); if (needUninit) CoUninitialize(); return false; }
+    PWSTR pszPath = NULL;
+    h = psi->GetDisplayName(SIGDN_FILESYSPATH, &pszPath);
+    if (SUCCEEDED(h) && pszPath)
+    {
+        std::wstring wpath(pszPath);
+        outFolder = WideToUtf8(wpath);
+        CoTaskMemFree(pszPath);
+    }
+    psi->Release();
+    pfd->Release();
+    if (needUninit) CoUninitialize();
+    return !outFolder.empty();
+}
+#endif
 
 static bool ReplaceInFile(const fs::path& filePath, const std::string& from, const std::string& to)
 {
@@ -214,6 +256,14 @@ static void DrawUI()
     std::snprintf(dstBuf, sizeof(dstBuf), "%s", g_state.targetString.c_str());
 
     if (ImGui::InputText("Directory", dirBuf, sizeof(dirBuf))) g_state.directoryPath = dirBuf;
+#ifdef _WIN32
+    ImGui::SameLine();
+    if (ImGui::Button("Browse..."))
+    {
+        std::string sel;
+        if (PickFolderWin32(sel)) g_state.directoryPath = sel;
+    }
+#endif
     if (ImGui::InputText("Source", srcBuf, sizeof(srcBuf))) g_state.sourceString = srcBuf;
     if (ImGui::InputText("Target", dstBuf, sizeof(dstBuf))) g_state.targetString = dstBuf;
 
