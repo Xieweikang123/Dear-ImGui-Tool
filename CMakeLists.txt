@@ -58,7 +58,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 if(WIN32 AND USE_D3D11)
     # Link DirectX 11 libraries
-    target_link_libraries(${PROJECT_NAME} d3d11 dxgi d3dcompiler)
+    target_link_libraries(${PROJECT_NAME} d3d11 dxgi d3dcompiler ole32 oleaut32)
 else()
     # Non-D3D11 path: find and link GLFW + OpenGL
     find_package(PkgConfig QUIET)
@@ -125,7 +125,7 @@ else()
     endif()
 
     if(WIN32)
-        target_link_libraries(${PROJECT_NAME} opengl32 gdi32)
+        target_link_libraries(${PROJECT_NAME} opengl32 gdi32 ole32 oleaut32)
     elseif(APPLE)
         find_library(OPENGL_LIBRARY OpenGL)
         target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARY})

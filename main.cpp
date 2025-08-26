@@ -16,6 +16,8 @@
 #include <shobjidl.h>
 #include <tlhelp32.h>
 #include <unordered_map>
+#include <objbase.h>
+#include <oleauto.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -55,6 +57,30 @@ static void AppendLog(const std::string& line)
         g_state.logFile << line << '\n';
         g_state.logFile.flush();
     }
+#ifdef _WIN32
+    // Also mirror logs to a shared file used elsewhere by the app
+    static std::ofstream globalLog;
+    if (!globalLog.is_open())
+    {
+        globalLog.open("DearImGuiExample.log", std::ios::out | std::ios::app);
+    }
+    if (globalLog.is_open())
+    {
+        globalLog << line << '\n';
+        globalLog.flush();
+    }
+#else
+    static std::ofstream globalLog;
+    if (!globalLog.is_open())
+    {
+        globalLog.open("DearImGuiExample.log", std::ios::out | std::ios::app);
+    }
+    if (globalLog.is_open())
+    {
+        globalLog << line << '\n';
+        globalLog.flush();
+    }
+#endif
 }
 
 static std::string ReplaceAll(std::string input, const std::string& from, const std::string& to)
@@ -423,6 +449,8 @@ struct VSInstance
     DWORD pid = 0;
     std::string exePath;
     std::string windowTitle;
+    std::string solutionPath;
+    std::string activeDocumentPath;
 };
 
 static std::vector<VSInstance> g_vsList;
@@ -430,6 +458,7 @@ static std::mutex g_vsMutexVS;
 
 static void RefreshVSInstances()
 {
+    AppendLog("[vs] RefreshVSInstances: begin");
     std::vector<VSInstance> found;
 
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -495,8 +524,220 @@ static void RefreshVSInstances()
         if (it != pidToTitle.end()) inst.windowTitle = it->second;
     }
 
-    std::lock_guard<std::mutex> lock(g_vsMutexVS);
-    g_vsList.swap(found);
+    // Try to enrich with solution paths via ROT EnvDTE
+    // Build map hwnd->pid
+    std::unordered_map<DWORD, DWORD> hwndPid; // hwnd -> pid
+    for (auto& kv : pidToTitle)
+    {
+        hwndPid[kv.first] = kv.first; // placeholder; we'll actually collect hwnd later
+    }
+
+    // Enumerate ROT to find DTE objects and their MainWindow.HWnd and Solution.FullName
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool didCoInit = SUCCEEDED(hr);
+    // Initialize COM security (needed for cross-process DTE automation on some systems)
+    static bool comSecurityInitialized = false;
+    if (didCoInit && !comSecurityInitialized)
+    {
+        HRESULT hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
+            RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+        if (SUCCEEDED(hrSec)) comSecurityInitialized = true;
+    }
+    IRunningObjectTable* pRot = NULL;
+    IEnumMoniker* pEnum = NULL;
+    if (SUCCEEDED(GetRunningObjectTable(0, &pRot)) && pRot)
+    {
+        if (SUCCEEDED(pRot->EnumRunning(&pEnum)) && pEnum)
+        {
+            IMoniker* pMoniker = NULL;
+            IBindCtx* pBindCtx = NULL;
+            CreateBindCtx(0, &pBindCtx);
+            while (pEnum->Next(1, &pMoniker, NULL) == S_OK)
+            {
+                LPOLESTR displayName = NULL;
+                if (pBindCtx && SUCCEEDED(pMoniker->GetDisplayName(pBindCtx, NULL, &displayName)) && displayName)
+                {
+                    // Match !VisualStudio.DTE
+                    std::wstring dn(displayName);
+                    if (dn.find(L"!VisualStudio.DTE") == 0)
+                    {
+                        IUnknown* pUnk = NULL;
+                        if (SUCCEEDED(pRot->GetObject(pMoniker, &pUnk)) && pUnk)
+                        {
+                            IDispatch* pDisp = NULL;
+                            if (SUCCEEDED(pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp)) && pDisp)
+                            {
+                                // Get MainWindow.HWnd
+                                DISPID dispidMainWindow = 0;
+                                OLECHAR* nameMainWindow = L"MainWindow";
+                                if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameMainWindow, 1, LOCALE_USER_DEFAULT, &dispidMainWindow)))
+                                {
+                                    VARIANT resultMainWindow; VariantInit(&resultMainWindow);
+                                    DISPPARAMS noArgs = {0};
+                                    if (SUCCEEDED(pDisp->Invoke(dispidMainWindow, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultMainWindow, NULL, NULL)))
+                                    {
+                                        if (resultMainWindow.vt == VT_DISPATCH && resultMainWindow.pdispVal)
+                                        {
+                                            IDispatch* pMainWin = resultMainWindow.pdispVal;
+                                            DISPID dispidHWnd = 0;
+                                            OLECHAR* nameHWnd = L"HWnd";
+                                            if (SUCCEEDED(pMainWin->GetIDsOfNames(IID_NULL, &nameHWnd, 1, LOCALE_USER_DEFAULT, &dispidHWnd)))
+                                            {
+                                                VARIANT resultHwnd; VariantInit(&resultHwnd);
+                                                if (SUCCEEDED(pMainWin->Invoke(dispidHWnd, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultHwnd, NULL, NULL)))
+                                                {
+                                                    LONG hwndVal = 0;
+                                                    if (resultHwnd.vt == VT_I4) hwndVal = resultHwnd.lVal;
+                                                    else if (resultHwnd.vt == VT_I2) hwndVal = resultHwnd.iVal;
+                                                    if (hwndVal)
+                                                    {
+                                                        DWORD pid = 0;
+                                                        GetWindowThreadProcessId((HWND)(INT_PTR)hwndVal, &pid);
+                                                        if (pid)
+                                                        {
+                                                            // Get Solution.FullName
+                                                            DISPID dispidSolution = 0;
+                                                            OLECHAR* nameSolution = L"Solution";
+                                                            if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution)))
+                                                            {
+                                                                VARIANT resultSolution; VariantInit(&resultSolution);
+                                                                if (SUCCEEDED(pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL)))
+                                                                {
+                                                                    if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
+                                                                    {
+                                                                        IDispatch* pSolution = resultSolution.pdispVal;
+                                                                        DISPID dispidFullName = 0;
+                                                                        OLECHAR* nameFullName = L"FullName";
+                                                                        if (SUCCEEDED(pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName)))
+                                                                        {
+                                                                            VARIANT resultFullName; VariantInit(&resultFullName);
+                                                                            if (SUCCEEDED(pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL)))
+                                                                            {
+                                                                                std::string sln;
+                                                                                if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
+                                                                                {
+                                                                                    sln = WideToUtf8(resultFullName.bstrVal);
+                                                                                }
+                                                                                // Fallback: attempt ActiveDocument.FullName, then search upward for .sln
+                                                                                if (sln.empty())
+                                                                                {
+                                                                                    DISPID dispidActiveDoc = 0;
+                                                                                    OLECHAR* nameActiveDoc = L"ActiveDocument";
+                                                                                    if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameActiveDoc, 1, LOCALE_USER_DEFAULT, &dispidActiveDoc)))
+                                                                                    {
+                                                                                        VARIANT resultActiveDoc; VariantInit(&resultActiveDoc);
+                                                                                        if (SUCCEEDED(pDisp->Invoke(dispidActiveDoc, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultActiveDoc, NULL, NULL)))
+                                                                                        {
+                                                                                            AppendLog("ActiveDocument");
+                                                                                            if (resultActiveDoc.vt == VT_DISPATCH && resultActiveDoc.pdispVal)
+                                                                                            {
+                                                                                                IDispatch* pDoc = resultActiveDoc.pdispVal;
+                                                                                                DISPID dispidDocFullName = 0;
+                                                                                                OLECHAR* nameDocFullName = L"FullName";
+                                                                                                if (SUCCEEDED(pDoc->GetIDsOfNames(IID_NULL, &nameDocFullName, 1, LOCALE_USER_DEFAULT, &dispidDocFullName)))
+                                                                                                {
+                                                                                                    VARIANT resultDocFN; VariantInit(&resultDocFN);
+
+                                                                                                    AppendLog("FullName");
+                                                                                                    if (SUCCEEDED(pDoc->Invoke(dispidDocFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultDocFN, NULL, NULL)))
+                                                                                                    {
+                                                                                                        if (resultDocFN.vt == VT_BSTR && resultDocFN.bstrVal)
+                                                                                                        {
+                                                                                                            std::string docPath = WideToUtf8(resultDocFN.bstrVal);
+                                                                                                            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" ActiveDocument: ") + docPath);
+                                                                                                            for (auto& inst : found)
+                                                                                                            {
+                                                                                                                if (inst.pid == pid)
+                                                                                                                {
+                                                                                                                    inst.activeDocumentPath = docPath;
+                                                                                                                }
+                                                                                                            }
+                                                                                                            std::error_code ec2;
+                                                                                                            fs::path pdir = fs::path(docPath).parent_path();
+                                                                                                            int depth = 0;
+                                                                                                            while (!pdir.empty() && depth < 12)
+                                                                                                            {
+                                                                                                                ec2.clear();
+                                                                                                                for (fs::directory_iterator dit(pdir, fs::directory_options::skip_permission_denied, ec2), dend; dit != dend; dit.increment(ec2))
+                                                                                                                {
+                                                                                                                    if (ec2) { ec2.clear(); continue; }
+                                                                                                                    const fs::directory_entry& e = *dit;
+                                                                                                                    if (e.is_regular_file(ec2) && !ec2)
+                                                                                                                    {
+                                                                                                                        std::string ext = e.path().extension().string();
+                                                                                                                        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+                                                                                                                        if (ext == ".sln")
+                                                                                                                        {
+                                                                                                                            sln = e.path().string();
+                                                                                                                            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Found nearby solution: ") + sln);
+                                                                                                                            break;
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                                if (!sln.empty()) break;
+                                                                                                                pdir = pdir.parent_path();
+                                                                                                                depth++;
+                                                                                                            }
+                                                                                                        }
+                                                                                                        VariantClear(&resultDocFN);
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                            VariantClear(&resultActiveDoc);
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                if (!sln.empty())
+                                                                                {
+                                                                                    for (auto& inst : found)
+                                                                                    {
+                                                                                        if (inst.pid == pid)
+                                                                                        {
+                                                                                            inst.solutionPath = sln;
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                VariantClear(&resultFullName);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    VariantClear(&resultSolution);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    VariantClear(&resultHwnd);
+                                                }
+                                            }
+                                            VariantClear(&resultMainWindow);
+                                        }
+                                        else
+                                        {
+                                            VariantClear(&resultMainWindow);
+                                        }
+                                    }
+                                }
+                                pDisp->Release();
+                            }
+                            pUnk->Release();
+                        }
+                    }
+                }
+                if (displayName) CoTaskMemFree(displayName);
+                if (pMoniker) pMoniker->Release();
+            }
+            if (pBindCtx) pBindCtx->Release();
+            pEnum->Release();
+        }
+        pRot->Release();
+    }
+    if (didCoInit) CoUninitialize();
+
+    {
+        std::lock_guard<std::mutex> lock(g_vsMutexVS);
+        g_vsList.swap(found);
+    }
+    AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
 }
 
 static void DrawVSUI()
@@ -504,6 +745,7 @@ static void DrawVSUI()
     ImGui::Begin("Running Visual Studio");
     if (ImGui::Button("Refresh"))
     {
+        AppendLog("[vs] UI: Refresh clicked");
         RefreshVSInstances();
     }
     ImGui::SameLine();
@@ -528,9 +770,27 @@ static void DrawVSUI()
             ImGui::TextDisabled("Title: %s", inst.windowTitle.c_str());
         if (!inst.exePath.empty())
             ImGui::TextDisabled("Path: %s", inst.exePath.c_str());
+        if (!inst.solutionPath.empty())
+            ImGui::TextDisabled("Solution: %s", inst.solutionPath.c_str());
+        if (!inst.activeDocumentPath.empty())
+            ImGui::TextDisabled("ActiveDocument: %s", inst.activeDocumentPath.c_str());
         ImGui::Separator();
     }
     ImGui::EndChild();
+
+    if (ImGui::CollapsingHeader("Log (from AppendLog)", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::BeginChild("vslog", ImVec2(0, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
+        {
+            std::lock_guard<std::mutex> lock(g_state.logMutex);
+            for (const std::string& line : g_state.logLines)
+            {
+                ImGui::TextUnformatted(line.c_str());
+            }
+            if (!g_state.logLines.empty()) ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+    }
     ImGui::End();
 }
 #else
@@ -762,6 +1022,10 @@ static void glfw_error_callback(int error, const char* description)
 
 int main(int, char**)
 {
+
+    //log
+    AppendLog("main");
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
