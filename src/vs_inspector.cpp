@@ -42,6 +42,190 @@ namespace VSInspector
         return strTo;
     }
 
+    // Helpers to flatten COM interaction and reduce nesting
+    static bool GetPidFromDTE(IDispatch* pDisp, DWORD& pidOut)
+    {
+        pidOut = 0;
+        if (!pDisp) return false;
+        DISPID dispidMainWindow = 0; OLECHAR* nameMainWindow = L"MainWindow";
+        if (FAILED(pDisp->GetIDsOfNames(IID_NULL, &nameMainWindow, 1, LOCALE_USER_DEFAULT, &dispidMainWindow)))
+        {
+            AppendLog("[vs] GetIDsOfNames(MainWindow) failed");
+            return false;
+        }
+        VARIANT resultMainWindow; VariantInit(&resultMainWindow);
+        DISPPARAMS noArgs = {0};
+        if (FAILED(pDisp->Invoke(dispidMainWindow, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultMainWindow, NULL, NULL)))
+        {
+            AppendLog("[vs] Invoke(MainWindow) failed");
+            return false;
+        }
+        bool ok = false;
+        if (resultMainWindow.vt == VT_DISPATCH && resultMainWindow.pdispVal)
+        {
+            IDispatch* pMainWin = resultMainWindow.pdispVal;
+            DISPID dispidHWnd = 0; OLECHAR* nameHWnd = L"HWnd";
+            if (SUCCEEDED(pMainWin->GetIDsOfNames(IID_NULL, &nameHWnd, 1, LOCALE_USER_DEFAULT, &dispidHWnd)))
+            {
+                VARIANT resultHwnd; VariantInit(&resultHwnd);
+                if (SUCCEEDED(pMainWin->Invoke(dispidHWnd, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultHwnd, NULL, NULL)))
+                {
+                    LONG hwndVal = 0;
+                    if (resultHwnd.vt == VT_I4) hwndVal = resultHwnd.lVal; else if (resultHwnd.vt == VT_I2) hwndVal = resultHwnd.iVal;
+                    if (hwndVal)
+                    {
+                        GetWindowThreadProcessId((HWND)(INT_PTR)hwndVal, &pidOut);
+                        ok = (pidOut != 0);
+                        if (ok) AppendLog(std::string("[vs] DTE hwnd=") + std::to_string((long)hwndVal) + std::string(" pid=") + std::to_string((unsigned long)pidOut));
+                    }
+                }
+                VariantClear(&resultHwnd);
+            }
+        }
+        else
+        {
+            AppendLog("[vs] MainWindow not a dispatch");
+        }
+        VariantClear(&resultMainWindow);
+        return ok;
+    }
+
+    static bool TryGetSolutionFullName(IDispatch* pDisp, std::string& slnOut)
+    {
+        slnOut.clear();
+        if (!pDisp) return false;
+        DISPID dispidSolution = 0; OLECHAR* nameSolution = L"Solution";
+        if (FAILED(pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution)))
+        {
+            AppendLog("[vs] GetIDsOfNames(Solution) failed");
+            return false;
+        }
+        VARIANT resultSolution; VariantInit(&resultSolution); DISPPARAMS noArgs = {0};
+        HRESULT hrInvokeSolution = pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL);
+        if (FAILED(hrInvokeSolution))
+        {
+            AppendLog(std::string("[vs] Invoke(Solution) failed hr=") + std::to_string((long)hrInvokeSolution));
+            return false;
+        }
+        bool ok = false;
+        if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
+        {
+            IDispatch* pSolution = resultSolution.pdispVal;
+            DISPID dispidFullName = 0; OLECHAR* nameFullName = L"FullName";
+            HRESULT hrNameFN = pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName);
+            if (SUCCEEDED(hrNameFN))
+            {
+                VARIANT resultFullName; VariantInit(&resultFullName);
+                HRESULT hrInvokeFN = pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL);
+                if (SUCCEEDED(hrInvokeFN))
+                {
+                    if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
+                    {
+                        slnOut = WideToUtf8(resultFullName.bstrVal);
+                        AppendLog(std::string("[vs] Solution.FullName=") + slnOut);
+                        ok = !slnOut.empty();
+                    }
+                    else
+                    {
+                        AppendLog(std::string("[vs] Solution.FullName vt=") + std::to_string((int)resultFullName.vt));
+                    }
+                }
+                else
+                {
+                    AppendLog(std::string("[vs] Invoke(Solution.FullName) failed hr=") + std::to_string((long)hrInvokeFN));
+                }
+                VariantClear(&resultFullName);
+            }
+            else
+            {
+                AppendLog(std::string("[vs] GetIDsOfNames(FullName) failed hr=") + std::to_string((long)hrNameFN));
+            }
+        }
+        VariantClear(&resultSolution);
+        return ok;
+    }
+
+    static void SearchSlnNearDocument(const std::string& docPath, std::string& slnOut)
+    {
+        slnOut.clear();
+        std::error_code ec2; fs::path pdir = fs::path(docPath).parent_path(); fs::path startDir = pdir; int depth = 0;
+        while (!pdir.empty() && depth < 12)
+        {
+            ec2.clear();
+            for (fs::directory_iterator dit(pdir, fs::directory_options::skip_permission_denied, ec2), dend; dit != dend; dit.increment(ec2))
+            {
+                if (ec2) { ec2.clear(); continue; }
+                const fs::directory_entry& e = *dit;
+                if (e.is_regular_file(ec2) && !ec2)
+                {
+                    std::string ext = e.path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+                    if (ext == ".sln")
+                    {
+                        slnOut = e.path().string();
+                        AppendLog(std::string("[vs] Found nearby solution: ") + slnOut);
+                        return;
+                    }
+                }
+            }
+            if (!slnOut.empty()) break;
+            pdir = pdir.parent_path();
+            depth++;
+        }
+        if (slnOut.empty()) AppendLog(std::string("[vs] No .sln found near ") + startDir.string());
+    }
+
+    static void TryFillFromActiveDocument(IDispatch* pDisp, DWORD pid, std::vector<VSInstance>& found, std::string& slnOut)
+    {
+        slnOut.clear();
+        DISPID dispidActiveDoc = 0; OLECHAR* nameActiveDoc = L"ActiveDocument";
+        HRESULT hrNameAD = pDisp->GetIDsOfNames(IID_NULL, &nameActiveDoc, 1, LOCALE_USER_DEFAULT, &dispidActiveDoc);
+        if (FAILED(hrNameAD)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument) failed hr=") + std::to_string((long)hrNameAD)); return; }
+        VARIANT resultActiveDoc; VariantInit(&resultActiveDoc); DISPPARAMS noArgs = {0};
+        HRESULT hrInvokeAD = pDisp->Invoke(dispidActiveDoc, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultActiveDoc, NULL, NULL);
+        if (FAILED(hrInvokeAD)) { AppendLog(std::string("[vs] Invoke(ActiveDocument) failed hr=") + std::to_string((long)hrInvokeAD)); return; }
+        AppendLog("[vs] ActiveDocument fetched");
+        if (resultActiveDoc.vt != VT_DISPATCH || !resultActiveDoc.pdispVal) { AppendLog("[vs] ActiveDocument is null"); VariantClear(&resultActiveDoc); return; }
+        IDispatch* pDoc = resultActiveDoc.pdispVal;
+        DISPID dispidDocFullName = 0; OLECHAR* nameDocFullName = L"FullName";
+        HRESULT hrNameDocFN = pDoc->GetIDsOfNames(IID_NULL, &nameDocFullName, 1, LOCALE_USER_DEFAULT, &dispidDocFullName);
+        if (FAILED(hrNameDocFN)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument.FullName) failed hr=") + std::to_string((long)hrNameDocFN)); VariantClear(&resultActiveDoc); return; }
+        VARIANT resultDocFN; VariantInit(&resultDocFN);
+        if (SUCCEEDED(pDoc->Invoke(dispidDocFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultDocFN, NULL, NULL)))
+        {
+            if (resultDocFN.vt == VT_BSTR && resultDocFN.bstrVal)
+            {
+                std::string docPath = WideToUtf8(resultDocFN.bstrVal);
+                AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" ActiveDocument: ") + docPath);
+                for (auto& inst : found) { if (inst.pid == pid) { inst.activeDocumentPath = docPath; } }
+                SearchSlnNearDocument(docPath, slnOut);
+            }
+            VariantClear(&resultDocFN);
+        }
+        else
+        {
+            AppendLog("[vs] Invoke(ActiveDocument.FullName) failed");
+        }
+        VariantClear(&resultActiveDoc);
+    }
+
+    static void ProcessDteMoniker(IRunningObjectTable* pRot, IMoniker* pMoniker, std::vector<VSInstance>& found)
+    {
+        IUnknown* pUnk = NULL; HRESULT hrGetObj = pRot->GetObject(pMoniker, &pUnk);
+        if (FAILED(hrGetObj) || !pUnk) { AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj)); return; }
+        IDispatch* pDisp = NULL; HRESULT hrQI = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
+        if (FAILED(hrQI) || !pDisp) { AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI)); pUnk->Release(); return; }
+
+        DWORD pid = 0; if (!GetPidFromDTE(pDisp, pid) || pid == 0) { pDisp->Release(); pUnk->Release(); return; }
+        std::string sln; (void)TryGetSolutionFullName(pDisp, sln);
+        if (sln.empty()) { TryFillFromActiveDocument(pDisp, pid, found, sln); }
+        if (!sln.empty())
+        {
+            for (auto& inst : found) { if (inst.pid == pid) { inst.solutionPath = sln; AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath")); } }
+        }
+        pDisp->Release(); pUnk->Release();
+    }
+
     void Refresh()
     {
         AppendLog("[vs] RefreshVSInstances: begin");
@@ -79,6 +263,7 @@ namespace VSInspector
                             inst.exePath.assign(buf, sz);
                         CloseHandle(hProc);
                     }
+                    AppendLog(std::string("[vs] found devenv.exe pid=") + std::to_string((unsigned long)inst.pid) + (inst.exePath.empty() ? std::string(" path=<unknown>") : std::string(" path=") + inst.exePath));
                     found.push_back(inst);
                 }
             } while (Process32Next(hSnap, &pe));
@@ -107,23 +292,28 @@ namespace VSInspector
         {
             auto it = pidToTitle.find(inst.pid);
             if (it != pidToTitle.end()) inst.windowTitle = it->second;
+            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)inst.pid) + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle));
         }
 
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         bool didCoInit = SUCCEEDED(hr);
+        AppendLog(std::string("[vs] CoInitializeEx hr=") + std::to_string((long)hr) + std::string(" didCoInit=") + (didCoInit?"true":"false"));
         static bool comSecurityInitialized = false;
         if (didCoInit && !comSecurityInitialized)
         {
             HRESULT hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
                 RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+            AppendLog(std::string("[vs] CoInitializeSecurity hr=") + std::to_string((long)hrSec));
             if (SUCCEEDED(hrSec)) comSecurityInitialized = true;
         }
         IRunningObjectTable* pRot = NULL;
         IEnumMoniker* pEnum = NULL;
         if (SUCCEEDED(GetRunningObjectTable(0, &pRot)) && pRot)
         {
+            AppendLog("[vs] Got ROT");
             if (SUCCEEDED(pRot->EnumRunning(&pEnum)) && pEnum)
             {
+                AppendLog("[vs] EnumRunning success");
                 IMoniker* pMoniker = NULL;
                 IBindCtx* pBindCtx = NULL;
                 CreateBindCtx(0, &pBindCtx);
@@ -135,162 +325,12 @@ namespace VSInspector
                         std::wstring dn(displayName);
                         if (dn.find(L"!VisualStudio.DTE") == 0)
                         {
-                            IUnknown* pUnk = NULL;
-                            if (SUCCEEDED(pRot->GetObject(pMoniker, &pUnk)) && pUnk)
-                            {
-                                IDispatch* pDisp = NULL;
-                                if (SUCCEEDED(pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp)) && pDisp)
-                                {
-                                    DISPID dispidMainWindow = 0;
-                                    OLECHAR* nameMainWindow = L"MainWindow";
-                                    if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameMainWindow, 1, LOCALE_USER_DEFAULT, &dispidMainWindow)))
-                                    {
-                                        VARIANT resultMainWindow; VariantInit(&resultMainWindow);
-                                        DISPPARAMS noArgs = {0};
-                                        if (SUCCEEDED(pDisp->Invoke(dispidMainWindow, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultMainWindow, NULL, NULL)))
-                                        {
-                                            if (resultMainWindow.vt == VT_DISPATCH && resultMainWindow.pdispVal)
-                                            {
-                                                IDispatch* pMainWin = resultMainWindow.pdispVal;
-                                                DISPID dispidHWnd = 0;
-                                                OLECHAR* nameHWnd = L"HWnd";
-                                                if (SUCCEEDED(pMainWin->GetIDsOfNames(IID_NULL, &nameHWnd, 1, LOCALE_USER_DEFAULT, &dispidHWnd)))
-                                                {
-                                                    VARIANT resultHwnd; VariantInit(&resultHwnd);
-                                                    if (SUCCEEDED(pMainWin->Invoke(dispidHWnd, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultHwnd, NULL, NULL)))
-                                                    {
-                                                        LONG hwndVal = 0;
-                                                        if (resultHwnd.vt == VT_I4) hwndVal = resultHwnd.lVal;
-                                                        else if (resultHwnd.vt == VT_I2) hwndVal = resultHwnd.iVal;
-                                                        if (hwndVal)
-                                                        {
-                                                            DWORD pid = 0;
-                                                            GetWindowThreadProcessId((HWND)(INT_PTR)hwndVal, &pid);
-                                                            if (pid)
-                                                            {
-                                                                DISPID dispidSolution = 0;
-                                                                OLECHAR* nameSolution = L"Solution";
-                                                                if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution)))
-                                                                {
-                                                                    VARIANT resultSolution; VariantInit(&resultSolution);
-                                                                    if (SUCCEEDED(pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL)))
-                                                                    {
-                                                                        std::string sln;
-                                                                        if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
-                                                                        {
-                                                                            IDispatch* pSolution = resultSolution.pdispVal;
-                                                                            DISPID dispidFullName = 0;
-                                                                            OLECHAR* nameFullName = L"FullName";
-                                                                            if (SUCCEEDED(pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName)))
-                                                                            {
-                                                                                VARIANT resultFullName; VariantInit(&resultFullName);
-                                                                                if (SUCCEEDED(pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL)))
-                                                                                {
-                                                                                    if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
-                                                                                    {
-                                                                                        sln = WideToUtf8(resultFullName.bstrVal);
-                                                                                    }
-                                                                                    VariantClear(&resultFullName);
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        if (sln.empty())
-                                                                        {
-                                                                            DISPID dispidActiveDoc = 0;
-                                                                            OLECHAR* nameActiveDoc = L"ActiveDocument";
-                                                                            if (SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &nameActiveDoc, 1, LOCALE_USER_DEFAULT, &dispidActiveDoc)))
-                                                                            {
-                                                                                VARIANT resultActiveDoc; VariantInit(&resultActiveDoc);
-                                                                                if (SUCCEEDED(pDisp->Invoke(dispidActiveDoc, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultActiveDoc, NULL, NULL)))
-                                                                                {
-                                                                                    ReplaceTool::AppendLog("ActiveDocument");
-                                                                                    if (resultActiveDoc.vt == VT_DISPATCH && resultActiveDoc.pdispVal)
-                                                                                    {
-                                                                                        IDispatch* pDoc = resultActiveDoc.pdispVal;
-                                                                                        DISPID dispidDocFullName = 0;
-                                                                                        OLECHAR* nameDocFullName = L"FullName";
-                                                                                        if (SUCCEEDED(pDoc->GetIDsOfNames(IID_NULL, &nameDocFullName, 1, LOCALE_USER_DEFAULT, &dispidDocFullName)))
-                                                                                        {
-                                                                                            VARIANT resultDocFN; VariantInit(&resultDocFN);
-                                                                                            ReplaceTool::AppendLog("FullName");
-                                                                                            if (SUCCEEDED(pDoc->Invoke(dispidDocFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultDocFN, NULL, NULL)))
-                                                                                            {
-                                                                                                if (resultDocFN.vt == VT_BSTR && resultDocFN.bstrVal)
-                                                                                                {
-                                                                                                    std::string docPath = WideToUtf8(resultDocFN.bstrVal);
-                                                                                                    ReplaceTool::AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" ActiveDocument: ") + docPath);
-                                                                                                    for (auto& inst : found)
-                                                                                                    {
-                                                                                                        if (inst.pid == pid)
-                                                                                                        {
-                                                                                                            inst.activeDocumentPath = docPath;
-                                                                                                        }
-                                                                                                    }
-                                                                                                    std::error_code ec2;
-                                                                                                    fs::path pdir = fs::path(docPath).parent_path();
-                                                                                                    int depth = 0;
-                                                                                                    while (!pdir.empty() && depth < 12)
-                                                                                                    {
-                                                                                                        ec2.clear();
-                                                                                                        for (fs::directory_iterator dit(pdir, fs::directory_options::skip_permission_denied, ec2), dend; dit != dend; dit.increment(ec2))
-                                                                                                        {
-                                                                                                            if (ec2) { ec2.clear(); continue; }
-                                                                                                            const fs::directory_entry& e = *dit;
-                                                                                                            if (e.is_regular_file(ec2) && !ec2)
-                                                                                                            {
-                                                                                                                std::string ext = e.path().extension().string();
-                                                                                                                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return (char)std::tolower(c); });
-                                                                                                                if (ext == ".sln")
-                                                                                                                {
-                                                                                                                    sln = e.path().string();
-                                                                                                                    ReplaceTool::AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Found nearby solution: ") + sln);
-                                                                                                                    break;
-                                                                                                                }
-                                                                                                            }
-                                                                                                        }
-                                                                                                        if (!sln.empty()) break;
-                                                                                                        pdir = pdir.parent_path();
-                                                                                                        depth++;
-                                                                                                    }
-                                                                                                }
-                                                                                                VariantClear(&resultDocFN);
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                    VariantClear(&resultActiveDoc);
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        if (!sln.empty())
-                                                                        {
-                                                                            for (auto& inst : found)
-                                                                            {
-                                                                                if (inst.pid == pid)
-                                                                                {
-                                                                                    inst.solutionPath = sln;
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        VariantClear(&resultSolution);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        VariantClear(&resultHwnd);
-                                                    }
-                                                }
-                                                VariantClear(&resultMainWindow);
-                                            }
-                                            else
-                                            {
-                                                VariantClear(&resultMainWindow);
-                                            }
-                                        }
-                                    }
-                                    pDisp->Release();
-                                }
-                                pUnk->Release();
-                            }
+                            AppendLog(std::string("[vs] ROT item: ") + WideToUtf8(dn));
+                            // Use flattened helper to avoid deep nesting
+                            ProcessDteMoniker(pRot, pMoniker, found);
+                            if (displayName) CoTaskMemFree(displayName);
+                            if (pMoniker) pMoniker->Release();
+                            continue;
                         }
                     }
                     if (displayName) CoTaskMemFree(displayName);
@@ -308,6 +348,13 @@ namespace VSInspector
             g_vsList.swap(found);
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
+        for (const auto& inst : g_vsList)
+        {
+            AppendLog(std::string("[vs] summary pid=") + std::to_string((unsigned long)inst.pid)
+                + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle)
+                + std::string(" solution=") + (inst.solutionPath.empty()?"<none>":inst.solutionPath)
+                + std::string(" activeDoc=") + (inst.activeDocumentPath.empty()?"<none>":inst.activeDocumentPath));
+        }
     }
 
     void DrawVSUI()
