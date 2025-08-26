@@ -46,6 +46,47 @@ namespace VSInspector
     static std::vector<CursorInstance> g_cursorList;
     static std::mutex g_vsMutexVS;
 
+    // Selections and persistence
+    static std::string g_selectedSlnPath;
+    static std::string g_selectedCursorFolder;
+
+    // Forward declare env helper used by prefs
+    static std::string GetEnvU8(const char* name);
+
+    static fs::path GetPrefsFile()
+    {
+        std::string appdata = GetEnvU8("APPDATA");
+        fs::path dir = appdata.empty() ? fs::path(".") : fs::path(appdata);
+        dir /= "DearImGuiTool";
+        std::error_code ec; fs::create_directories(dir, ec);
+        return dir / "prefs.txt";
+    }
+
+    static void SavePrefs()
+    {
+        fs::path p = GetPrefsFile();
+        std::ofstream ofs(p.string(), std::ios::binary);
+        if (!ofs) { AppendLog(std::string("[prefs] open for write failed: ") + p.string()); return; }
+        ofs << "sln=" << g_selectedSlnPath << "\n";
+        ofs << "cursor=" << g_selectedCursorFolder << "\n";
+        AppendLog(std::string("[prefs] saved to ") + p.string());
+    }
+
+    static void LoadPrefs()
+    {
+        fs::path p = GetPrefsFile();
+        std::error_code ec; if (!fs::exists(p, ec)) { AppendLog("[prefs] no prefs file"); return; }
+        std::ifstream ifs(p.string(), std::ios::binary);
+        if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return; }
+        std::string line;
+        while (std::getline(ifs, line))
+        {
+            if (line.rfind("sln=", 0) == 0) g_selectedSlnPath = line.substr(4);
+            else if (line.rfind("cursor=", 0) == 0) g_selectedCursorFolder = line.substr(7);
+        }
+        AppendLog(std::string("[prefs] loaded from ") + p.string());
+    }
+
     static std::string WideToUtf8(const std::wstring& w)
     {
         if (w.empty()) return std::string();
@@ -419,6 +460,12 @@ namespace VSInspector
         std::vector<VSInstance> found;
         std::vector<CursorInstance> foundCursor;
 
+        // Load persisted prefs once per refresh to show defaults
+        if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
+        {
+            LoadPrefs();
+        }
+
         HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnap == INVALID_HANDLE_VALUE)
             return;
@@ -665,41 +712,70 @@ namespace VSInspector
 
         ImGui::Text("Found %d instance(s)", (int)local.size());
         ImGui::Separator();
+        // Selection states
+        static DWORD selectedVsPid = 0;
+        static DWORD selectedCursorPid = 0;
+
         ImGui::BeginChild("vslist", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
         for (const auto& inst : local)
         {
-            ImGui::Text("PID: %lu", (unsigned long)inst.pid);
+            char selLabel[64];
+            snprintf(selLabel, sizeof(selLabel), "VS PID: %lu", (unsigned long)inst.pid);
+            bool selected = (selectedVsPid == inst.pid);
+            if (ImGui::Selectable(selLabel, selected)) selectedVsPid = inst.pid;
             if (!inst.windowTitle.empty())
                 ImGui::TextDisabled("Title: %s", inst.windowTitle.c_str());
             if (!inst.exePath.empty())
                 ImGui::TextDisabled("Path: %s", inst.exePath.c_str());
             if (!inst.solutionPath.empty())
+            {
                 ImGui::TextDisabled("Solution: %s", inst.solutionPath.c_str());
+                bool checked = (g_selectedSlnPath == inst.solutionPath);
+                std::string chkId = std::string("Use this solution##") + std::to_string((unsigned long)inst.pid);
+                if (ImGui::Checkbox(chkId.c_str(), &checked))
+                {
+                    g_selectedSlnPath = checked ? inst.solutionPath : std::string();
+                }
+            }
             if (!inst.activeDocumentPath.empty())
                 ImGui::TextDisabled("ActiveDocument: %s", inst.activeDocumentPath.c_str());
-            // 合并展示 Cursor: 找一个可用的 folderPath 或 workspaceName
-            if (!localCursor.empty())
+            ImGui::Separator();
+        }
+        // Append Cursor entries in the same list (peer to VS)
+        for (const auto& c : localCursor)
+        {
+            if (c.folderPath.empty()) continue; // skip cursors without resolved folder
+            char selLabel[64];
+            snprintf(selLabel, sizeof(selLabel), "Cursor PID: %lu", (unsigned long)c.pid);
+            bool selected = (selectedCursorPid == c.pid);
+            if (ImGui::Selectable(selLabel, selected)) selectedCursorPid = c.pid;
+            if (!c.windowTitle.empty())
+                ImGui::TextDisabled("Title: %s", c.windowTitle.c_str());
+            if (!c.exePath.empty())
+                ImGui::TextDisabled("Path: %s", c.exePath.c_str());
             {
-                std::string cursorLine;
-                // 优先展示第一个可用的 folderPath，否则展示 workspaceName 样例
-                std::string folder;
-                for (const auto& c : localCursor) { if (!c.folderPath.empty()) { folder = c.folderPath; break; } }
-                if (!folder.empty())
+                ImGui::TextDisabled("Folder: %s", c.folderPath.c_str());
+                bool checked = (g_selectedCursorFolder == c.folderPath);
+                std::string chkId = std::string("Use this folder##") + std::to_string((unsigned long)c.pid);
+                if (ImGui::Checkbox(chkId.c_str(), &checked))
                 {
-                    cursorLine = std::string("Cursor Folder: ") + folder;
+                    g_selectedCursorFolder = checked ? c.folderPath : std::string();
                 }
-                else
-                {
-                    std::string ws;
-                    for (const auto& c : localCursor) { if (!c.workspaceName.empty()) { if (!ws.empty()) { ws += ", "; } ws += c.workspaceName; if (ws.size() > 64) break; } }
-                    if (!ws.empty()) cursorLine = std::string("Cursor Workspaces: ") + ws;
-                }
-                if (!cursorLine.empty()) ImGui::TextDisabled("%s", cursorLine.c_str());
             }
             ImGui::Separator();
         }
         ImGui::EndChild();
 
+        // Persist controls
+        if (ImGui::Button("Save selection"))
+        {
+            SavePrefs();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load selection"))
+        {
+            LoadPrefs();
+        }
 
         if (ImGui::CollapsingHeader("Log (from AppendLog)", ImGuiTreeNodeFlags_DefaultOpen))
         {
