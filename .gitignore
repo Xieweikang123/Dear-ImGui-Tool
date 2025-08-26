@@ -1,0 +1,68 @@
+# General
+.DS_Store
+Thumbs.db
+*.log
+
+# Editors/IDE
+.vscode/
+.idea/
+.vs/
+
+# Build directories
+build/
+[Bb]uild*/
+out/
+bin/
+obj/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+install_manifest.txt
+
+# Visual Studio
+*.sln
+*.vcxproj
+*.vcxproj.*
+*.vcproj
+*.vcproj.*
+*.user
+*.userosscache
+*.suo
+*.sdf
+*.opensdf
+*.opendb
+*.ipch
+*.tlog
+*.lastbuildstate
+*.cachefile
+*.pdb
+*.ilk
+*.idb
+*.obj
+*.pch
+*.res
+*.manifest
+*.recipe
+
+# Configurations
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+x64/
+x86/
+
+# Binaries
+*.exe
+*.dll
+*.lib
+*.exp
+
+# Third-party sources fetched locally
+imgui/
+
+
