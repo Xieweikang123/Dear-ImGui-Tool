@@ -9,6 +9,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdio>
+#include <chrono>
+#include <ctime>
 #ifdef _WIN32
 #include <windows.h>
 #include <shobjidl.h>
@@ -25,6 +27,8 @@ struct ReplaceState
     bool includeContents = true;
     bool includeFilenames = true;
     bool recurseSubdirectories = true;
+    bool backupBeforeRun = true;
+    bool writeLogToFile = true;
     std::atomic<bool> isRunning{false};
     std::atomic<bool> cancelRequested{false};
     std::thread worker;
@@ -33,6 +37,9 @@ struct ReplaceState
     size_t filesProcessed = 0;
     size_t filesModified = 0;
     size_t namesRenamed = 0;
+    std::string lastBackupPath;
+    std::string logFilePath;
+    std::ofstream logFile;
 };
 
 static ReplaceState g_state;
@@ -41,6 +48,11 @@ static void AppendLog(const std::string& line)
 {
     std::lock_guard<std::mutex> lock(g_state.logMutex);
     g_state.logLines.emplace_back(line);
+    if (g_state.logFile.is_open())
+    {
+        g_state.logFile << line << '\n';
+        g_state.logFile.flush();
+    }
 }
 
 static std::string ReplaceAll(std::string input, const std::string& from, const std::string& to)
@@ -53,6 +65,40 @@ static std::string ReplaceAll(std::string input, const std::string& from, const 
         pos += to.length();
     }
     return input;
+}
+
+static std::string MakeTimestamp()
+{
+    std::time_t t = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d",
+        tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    return std::string(buf);
+}
+
+static bool CreateBackup(const fs::path& srcDir, fs::path& outBackupPath)
+{
+    if (!fs::exists(srcDir) || !fs::is_directory(srcDir)) return false;
+    const std::string ts = MakeTimestamp();
+    const std::string name = srcDir.filename().empty() ? std::string("backup_") + ts : (srcDir.filename().string() + std::string("_backup_") + ts);
+    fs::path backupDir = srcDir.parent_path() / name;
+    std::error_code ec;
+    fs::create_directories(backupDir, ec);
+    if (ec) { AppendLog(std::string("[error] Create backup dir failed: ") + backupDir.string()); return false; }
+    fs::copy(srcDir, backupDir, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
+    if (ec)
+    {
+        AppendLog(std::string("[error] Backup copy failed: ") + ec.message());
+        return false;
+    }
+    outBackupPath = backupDir;
+    return true;
 }
 
 #ifdef _WIN32
@@ -160,6 +206,46 @@ static void RunReplacement()
         return;
     }
 
+    // Prepare log file if enabled
+    bool logOpened = false;
+    if (g_state.writeLogToFile)
+    {
+        const std::string ts = MakeTimestamp();
+        fs::path logPath = root / (std::string("replace_log_") + ts + ".txt");
+        std::error_code lec;
+        g_state.logFilePath = logPath.string();
+        g_state.logFile.open(logPath, std::ios::out | std::ios::app);
+        if (g_state.logFile.is_open())
+        {
+            logOpened = true;
+            AppendLog(std::string("[info] Logging to: ") + g_state.logFilePath);
+            AppendLog(std::string("[info] Options: contents=") + (g_state.includeContents?"on":"off") + 
+                      ", names=" + (g_state.includeFilenames?"on":"off") + 
+                      ", recurse=" + (g_state.recurseSubdirectories?"on":"off") + 
+                      ", backup=" + (g_state.backupBeforeRun?"on":"off"));
+        }
+        else
+        {
+            AppendLog("[warn] Could not open log file; continuing with in-memory log only");
+        }
+    }
+
+    if (g_state.backupBeforeRun)
+    {
+        fs::path backupPath;
+        if (CreateBackup(root, backupPath))
+        {
+            g_state.lastBackupPath = backupPath.string();
+            AppendLog(std::string("[info] Backup created at: ") + g_state.lastBackupPath);
+        }
+        else
+        {
+            AppendLog("[error] Backup failed. Aborting.");
+            if (logOpened) { g_state.logFile.close(); }
+            return;
+        }
+    }
+
     std::vector<fs::path> files;
     std::vector<fs::path> dirs;
     CollectPaths(root, g_state.recurseSubdirectories, files, dirs);
@@ -170,7 +256,7 @@ static void RunReplacement()
     {
         for (const fs::path& p : files)
         {
-            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); if (logOpened) { g_state.logFile.close(); } return; }
             g_state.filesProcessed++;
             bool modified = false;
             try { modified = ReplaceInFile(p, from, to); }
@@ -188,7 +274,7 @@ static void RunReplacement()
         // Rename files first
         for (const fs::path& p : files)
         {
-            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); if (logOpened) { g_state.logFile.close(); } return; }
             const std::string name = p.filename().string();
             if (name.find(from) != std::string::npos)
             {
@@ -213,7 +299,7 @@ static void RunReplacement()
         std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b){ return a.string().size() > b.string().size(); });
         for (const fs::path& d : dirs)
         {
-            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); if (logOpened) { g_state.logFile.close(); } return; }
             const std::string name = d.filename().string();
             if (name.find(from) != std::string::npos)
             {
@@ -237,6 +323,7 @@ static void RunReplacement()
     }
 
     AppendLog("[done] Done");
+    if (logOpened) { g_state.logFile.close(); }
 }
 
 static void DrawUI()
@@ -272,6 +359,19 @@ static void DrawUI()
     ImGui::Checkbox("Rename files/dirs", &g_state.includeFilenames);
     ImGui::SameLine();
     ImGui::Checkbox("Recurse subdirs", &g_state.recurseSubdirectories);
+
+    ImGui::Checkbox("Backup before run", &g_state.backupBeforeRun);
+    if (!g_state.lastBackupPath.empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Last backup: %s", g_state.lastBackupPath.c_str());
+    }
+    ImGui::Checkbox("Write log to file", &g_state.writeLogToFile);
+    if (!g_state.logFilePath.empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Log: %s", g_state.logFilePath.c_str());
+    }
 
     if (!g_state.isRunning)
     {
