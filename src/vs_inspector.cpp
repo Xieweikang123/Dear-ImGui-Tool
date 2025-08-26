@@ -6,6 +6,9 @@
 #include <vector>
 #include <mutex>
 #include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <cstring>
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
@@ -30,7 +33,17 @@ namespace VSInspector
         std::string activeDocumentPath;
     };
 
+    struct CursorInstance
+    {
+        DWORD pid = 0;
+        std::string exePath;
+        std::string windowTitle;
+        std::string folderPath;
+        std::string workspaceName;
+    };
+
     static std::vector<VSInstance> g_vsList;
+    static std::vector<CursorInstance> g_cursorList;
     static std::mutex g_vsMutexVS;
 
     static std::string WideToUtf8(const std::wstring& w)
@@ -40,6 +53,114 @@ namespace VSInspector
         std::string strTo(size_needed, 0);
         WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &strTo[0], size_needed, NULL, NULL);
         return strTo;
+    }
+
+    static std::string UrlDecode(const std::string& s)
+    {
+        std::string out; out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i)
+        {
+            if (s[i] == '%' && i + 2 < s.size())
+            {
+                auto hex = s.substr(i + 1, 2);
+                char* endp = nullptr;
+                int v = (int)strtol(hex.c_str(), &endp, 16);
+                if (endp != nullptr && *endp == '\0') { out.push_back((char)v); i += 2; continue; }
+            }
+            if (s[i] == '+') out.push_back(' '); else out.push_back(s[i]);
+        }
+        return out;
+    }
+
+    // Forward declaration for use below
+    static bool DecodeFileUriToWindowsPath(const std::string& uri, std::string& outPath);
+
+    static bool ExtractLastFileUriWindowsPath(const std::string& text, std::string& outPath)
+    {
+        outPath.clear();
+        size_t pos = text.rfind("file:///");
+        if (pos == std::string::npos) return false;
+        size_t start = text.rfind('"', pos);
+        size_t end = text.find('"', pos);
+        if (start == std::string::npos || end == std::string::npos || end <= start) return false;
+        std::string uri = text.substr(start + 1, end - start - 1);
+        return DecodeFileUriToWindowsPath(uri, outPath);
+    }
+
+    static bool DecodeFileUriToWindowsPath(const std::string& uri, std::string& outPath)
+    {
+        // Expect file:///D:/path or file:///D%3A/path
+        const std::string prefix = "file:///";
+        if (uri.rfind(prefix, 0) != 0) return false;
+        std::string rest = uri.substr(prefix.size());
+        rest = UrlDecode(rest);
+        for (auto& ch : rest) { if (ch == '/') ch = '\\'; }
+        outPath = rest;
+        return true;
+    }
+
+    static std::string GetEnvU8(const char* name)
+    {
+        char* v = nullptr; size_t len = 0; _dupenv_s(&v, &len, name);
+        std::string s = v ? std::string(v) : std::string();
+        if (v) free(v);
+        return s;
+    }
+
+    static void TryMapCursorWorkspaceFromRecent(const std::string& workspaceName, std::string& folderOut)
+    {
+        folderOut.clear();
+        // Cursor (VS Code派生) 近期记录大概率在 %APPDATA%\Cursor\User\globalStorage\storage.json
+        std::string appdata = GetEnvU8("APPDATA");
+        if (appdata.empty()) return;
+        fs::path p = fs::path(appdata) / "Cursor" / "User" / "globalStorage" / "storage.json";
+        std::error_code ec; if (!fs::exists(p, ec)) return;
+        std::ifstream ifs(p.string(), std::ios::binary);
+        if (!ifs) return;
+        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        // 粗略提取: 查找 "folderUri":"file:///..." 与紧邻的 "label":"..."
+        size_t pos = 0; size_t hitCount = 0;
+        while (true)
+        {
+            size_t fpos = content.find("\"folderUri\"", pos);
+            if (fpos == std::string::npos) break;
+            size_t q1 = content.find('"', fpos + 12); if (q1 == std::string::npos) break; // after key
+            size_t q2 = content.find('"', q1 + 1); if (q2 == std::string::npos) break; // value start quote
+            // value
+            size_t v1 = content.find('"', q2 + 1); if (v1 == std::string::npos) break;
+            std::string folderUri = content.substr(q2 + 1, v1 - (q2 + 1));
+            // find label within small window
+            size_t lpos = content.find("\"label\"", v1);
+            if (lpos == std::string::npos) { pos = v1 + 1; continue; }
+            size_t lq1 = content.find('"', lpos + 7); if (lq1 == std::string::npos) { pos = lpos + 1; continue; }
+            size_t lq2 = content.find('"', lq1 + 1); if (lq2 == std::string::npos) { pos = lq1 + 1; continue; }
+            std::string label = content.substr(lq1 + 1, lq2 - (lq1 + 1));
+            // 比较工作区名
+            if (_stricmp(label.c_str(), workspaceName.c_str()) == 0)
+            {
+                std::string winPath;
+                if (DecodeFileUriToWindowsPath(folderUri, winPath))
+                {
+                    folderOut = winPath; hitCount++;
+                    break;
+                }
+            }
+            pos = lq2 + 1;
+        }
+        if (!folderOut.empty())
+        {
+            AppendLog(std::string("[cursor] recent map: ") + workspaceName + std::string(" -> ") + folderOut);
+        }
+        else
+        {
+            AppendLog(std::string("[cursor] recent map miss for ") + workspaceName + std::string(" at ") + p.string());
+            std::string winPath;
+            if (ExtractLastFileUriWindowsPath(content, winPath))
+            {
+                folderOut = winPath;
+                AppendLog(std::string("[cursor] fallback last workspace -> ") + folderOut);
+            }
+        }
     }
 
     // Helpers to flatten COM interaction and reduce nesting
@@ -296,6 +417,7 @@ namespace VSInspector
     {
         AppendLog("[vs] RefreshVSInstances: begin");
         std::vector<VSInstance> found;
+        std::vector<CursorInstance> foundCursor;
 
         HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnap == INVALID_HANDLE_VALUE)
@@ -332,6 +454,22 @@ namespace VSInspector
                     AppendLog(std::string("[vs] found devenv.exe pid=") + std::to_string((unsigned long)inst.pid) + (inst.exePath.empty() ? std::string(" path=<unknown>") : std::string(" path=") + inst.exePath));
                     found.push_back(inst);
                 }
+                else if (exeLower == std::string("cursor.exe"))
+                {
+                    CursorInstance cinst;
+                    cinst.pid = pe.th32ProcessID;
+                    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+                    if (hProc)
+                    {
+                        char buf[MAX_PATH];
+                        DWORD sz = (DWORD)sizeof(buf);
+                        if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
+                            cinst.exePath.assign(buf, sz);
+                        CloseHandle(hProc);
+                    }
+                    AppendLog(std::string("[cursor] found cursor.exe pid=") + std::to_string((unsigned long)cinst.pid) + (cinst.exePath.empty()?" path=<unknown>":std::string(" path=") + cinst.exePath));
+                    foundCursor.push_back(cinst);
+                }
             } while (Process32Next(hSnap, &pe));
         }
         CloseHandle(hSnap);
@@ -359,6 +497,80 @@ namespace VSInspector
             auto it = pidToTitle.find(inst.pid);
             if (it != pidToTitle.end()) inst.windowTitle = it->second;
             AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)inst.pid) + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle));
+        }
+
+        for (auto& cinst : foundCursor)
+        {
+            auto it = pidToTitle.find(cinst.pid);
+            if (it != pidToTitle.end()) cinst.windowTitle = it->second;
+            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" title=") + (cinst.windowTitle.empty()?"<none>":cinst.windowTitle));
+            if (cinst.windowTitle.empty())
+            {
+                // No title to parse; skip heuristics for this instance
+                continue;
+            }
+            // Heuristic: title format "<file> - <workspace> - Cursor" 或 "<folder> - Cursor"
+            std::string title = cinst.windowTitle;
+            std::string suffix = " - Cursor";
+            // Allow admin suffix
+            if (title.size() > 9 && title.rfind(" - Cursor (Admin)") == title.size() - 17) {
+                title = title.substr(0, title.size() - 17);
+            }
+            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" normalizedTitle=") + title);
+            size_t pos = title.rfind(suffix);
+            std::string head = (pos != std::string::npos) ? title.substr(0, pos) : title;
+            // Trim spaces
+            while (!head.empty() && (head.back()==' '||head.back()=='\t')) head.pop_back();
+            while (!head.empty() && (head.front()==' '||head.front()=='\t')) head.erase(head.begin());
+            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" head=") + head);
+            // If head looks like a path and exists as directory, accept
+            std::error_code ecx;
+            if (!head.empty() && head.find(':') != std::string::npos)
+            {
+                bool isdir = fs::is_directory(head, ecx);
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" checkDir path=") + head + std::string(" isdir=") + (isdir?"true":"false") + std::string(" ec=") + std::to_string((int)ecx.value()));
+                if (isdir)
+                {
+                    cinst.folderPath = head;
+                }
+            }
+            // If still empty,尝试用“ - ”拆分，取最后一个段作为 workspace 名称
+            if (cinst.folderPath.empty() && !head.empty())
+            {
+                // split by " - "
+                std::vector<std::string> parts; parts.reserve(3);
+                size_t start = 0; while (true) {
+                    size_t p = head.find(" - ", start);
+                    if (p == std::string::npos) { parts.push_back(head.substr(start)); break; }
+                    parts.push_back(head.substr(start, p - start));
+                    start = p + 3;
+                }
+                if (!parts.empty())
+                {
+                    std::string partsLog;
+                    for (size_t i = 0; i < parts.size(); ++i) { if (i) partsLog += " | "; partsLog += parts[i]; }
+                    AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" parts=") + partsLog);
+                    cinst.workspaceName = parts.back();
+                    // trim
+                    while (!cinst.workspaceName.empty() && (cinst.workspaceName.back()==' '||cinst.workspaceName.back()=='\t')) cinst.workspaceName.pop_back();
+                    while (!cinst.workspaceName.empty() && (cinst.workspaceName.front()==' '||cinst.workspaceName.front()=='\t')) cinst.workspaceName.erase(cinst.workspaceName.begin());
+                    AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" workspaceName= ") + cinst.workspaceName);
+                    // 尝试从 Cursor 最近工作区记录映射真实文件夹
+                    if (!cinst.workspaceName.empty())
+                    {
+                        std::string mapped;
+                        TryMapCursorWorkspaceFromRecent(cinst.workspaceName, mapped);
+                        if (!mapped.empty())
+                        {
+                            cinst.folderPath = mapped;
+                        }
+                    }
+                }
+            }
+            if (cinst.folderPath.empty())
+            {
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" cannot parse folder from title: ") + title);
+            }
         }
 
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -416,8 +628,10 @@ namespace VSInspector
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             g_vsList.swap(found);
+            g_cursorList.swap(foundCursor);
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
+        AppendLog(std::string("[cursor] RefreshCursorInstances: end, instances=") + std::to_string((int)g_cursorList.size()));
         for (const auto& inst : g_vsList)
         {
             AppendLog(std::string("[vs] summary pid=") + std::to_string((unsigned long)inst.pid)
@@ -442,9 +656,11 @@ namespace VSInspector
         }
 
         std::vector<VSInstance> local;
+        std::vector<CursorInstance> localCursor;
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             local = g_vsList;
+            localCursor = g_cursorList;
         }
 
         ImGui::Text("Found %d instance(s)", (int)local.size());
@@ -461,9 +677,29 @@ namespace VSInspector
                 ImGui::TextDisabled("Solution: %s", inst.solutionPath.c_str());
             if (!inst.activeDocumentPath.empty())
                 ImGui::TextDisabled("ActiveDocument: %s", inst.activeDocumentPath.c_str());
+            // 合并展示 Cursor: 找一个可用的 folderPath 或 workspaceName
+            if (!localCursor.empty())
+            {
+                std::string cursorLine;
+                // 优先展示第一个可用的 folderPath，否则展示 workspaceName 样例
+                std::string folder;
+                for (const auto& c : localCursor) { if (!c.folderPath.empty()) { folder = c.folderPath; break; } }
+                if (!folder.empty())
+                {
+                    cursorLine = std::string("Cursor Folder: ") + folder;
+                }
+                else
+                {
+                    std::string ws;
+                    for (const auto& c : localCursor) { if (!c.workspaceName.empty()) { if (!ws.empty()) { ws += ", "; } ws += c.workspaceName; if (ws.size() > 64) break; } }
+                    if (!ws.empty()) cursorLine = std::string("Cursor Workspaces: ") + ws;
+                }
+                if (!cursorLine.empty()) ImGui::TextDisabled("%s", cursorLine.c_str());
+            }
             ImGui::Separator();
         }
         ImGui::EndChild();
+
 
         if (ImGui::CollapsingHeader("Log (from AppendLog)", ImGuiTreeNodeFlags_DefaultOpen))
         {
