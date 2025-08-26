@@ -1,4 +1,269 @@
 #include "imgui.h"
+#include <string>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <cstdio>
+
+namespace fs = std::filesystem;
+
+// Shared state for the simple string replacement tool UI
+struct ReplaceState
+{
+    std::string directoryPath;
+    std::string sourceString;
+    std::string targetString;
+    bool includeContents = true;
+    bool includeFilenames = true;
+    bool recurseSubdirectories = true;
+    std::atomic<bool> isRunning{false};
+    std::atomic<bool> cancelRequested{false};
+    std::thread worker;
+    std::vector<std::string> logLines;
+    std::mutex logMutex;
+    size_t filesProcessed = 0;
+    size_t filesModified = 0;
+    size_t namesRenamed = 0;
+};
+
+static ReplaceState g_state;
+
+static void AppendLog(const std::string& line)
+{
+    std::lock_guard<std::mutex> lock(g_state.logMutex);
+    g_state.logLines.emplace_back(line);
+}
+
+static std::string ReplaceAll(std::string input, const std::string& from, const std::string& to)
+{
+    if (from.empty()) return input;
+    size_t pos = 0;
+    while ((pos = input.find(from, pos)) != std::string::npos)
+    {
+        input.replace(pos, from.length(), to);
+        pos += to.length();
+    }
+    return input;
+}
+
+static bool ReplaceInFile(const fs::path& filePath, const std::string& from, const std::string& to)
+{
+    std::ifstream in(filePath, std::ios::in | std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    std::string content = ss.str();
+    in.close();
+
+    std::string replaced = ReplaceAll(content, from, to);
+    if (replaced == content) return false;
+
+    std::ofstream out(filePath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(replaced.data(), static_cast<std::streamsize>(replaced.size()));
+    out.close();
+    return true;
+}
+
+static void CollectPaths(const fs::path& root, bool recurse, std::vector<fs::path>& filesOut, std::vector<fs::path>& dirsOut)
+{
+    std::error_code ec;
+    if (!fs::exists(root, ec)) return;
+    if (recurse)
+    {
+        for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec))
+        {
+            if (ec) { ec.clear(); continue; }
+            const fs::directory_entry& e = *it;
+            if (e.is_regular_file(ec)) filesOut.push_back(e.path());
+            else if (e.is_directory(ec)) dirsOut.push_back(e.path());
+        }
+    }
+    else
+    {
+        for (fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec))
+        {
+            if (ec) { ec.clear(); continue; }
+            const fs::directory_entry& e = *it;
+            if (e.is_regular_file(ec)) filesOut.push_back(e.path());
+            else if (e.is_directory(ec)) dirsOut.push_back(e.path());
+        }
+    }
+}
+
+static void RunReplacement()
+{
+    const fs::path root = g_state.directoryPath;
+    const std::string from = g_state.sourceString;
+    const std::string to = g_state.targetString;
+
+    g_state.filesProcessed = 0;
+    g_state.filesModified = 0;
+    g_state.namesRenamed = 0;
+
+    if (from.empty())
+    {
+        AppendLog("[error] Empty source string");
+        return;
+    }
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec))
+    {
+        AppendLog(std::string("[error] Directory not found or inaccessible: ") + root.string());
+        return;
+    }
+
+    std::vector<fs::path> files;
+    std::vector<fs::path> dirs;
+    CollectPaths(root, g_state.recurseSubdirectories, files, dirs);
+
+    AppendLog("[info] Scan done, files: " + std::to_string(files.size()) + ", dirs: " + std::to_string(dirs.size()));
+
+    if (g_state.includeContents)
+    {
+        for (const fs::path& p : files)
+        {
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            g_state.filesProcessed++;
+            bool modified = false;
+            try { modified = ReplaceInFile(p, from, to); }
+            catch (...) { AppendLog(std::string("[error] Write failed: ") + p.string()); }
+            if (modified)
+            {
+                g_state.filesModified++;
+                AppendLog(std::string("[ok] Content replaced: ") + p.string());
+            }
+        }
+    }
+
+    if (g_state.includeFilenames)
+    {
+        // Rename files first
+        for (const fs::path& p : files)
+        {
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            const std::string name = p.filename().string();
+            if (name.find(from) != std::string::npos)
+            {
+                fs::path newPath = p.parent_path() / ReplaceAll(name, from, to);
+                std::error_code rec;
+                if (newPath != p)
+                {
+                    fs::rename(p, newPath, rec);
+                    if (!rec)
+                    {
+                        g_state.namesRenamed++;
+                        AppendLog(std::string("[ok] Renamed file: ") + p.string() + " -> " + newPath.string());
+                    }
+                    else
+                    {
+                        AppendLog(std::string("[error] Rename failed: ") + p.string());
+                    }
+                }
+            }
+        }
+        // Rename directories deepest-first
+        std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b){ return a.string().size() > b.string().size(); });
+        for (const fs::path& d : dirs)
+        {
+            if (g_state.cancelRequested) { AppendLog("[warn] Cancelled"); return; }
+            const std::string name = d.filename().string();
+            if (name.find(from) != std::string::npos)
+            {
+                fs::path newPath = d.parent_path() / ReplaceAll(name, from, to);
+                std::error_code rec;
+                if (newPath != d)
+                {
+                    fs::rename(d, newPath, rec);
+                    if (!rec)
+                    {
+                        g_state.namesRenamed++;
+                        AppendLog(std::string("[ok] Renamed dir: ") + d.string() + " -> " + newPath.string());
+                    }
+                    else
+                    {
+                        AppendLog(std::string("[error] Rename dir failed: ") + d.string());
+                    }
+                }
+            }
+        }
+    }
+
+    AppendLog("[done] Done");
+}
+
+static void DrawUI()
+{
+    ImGui::Begin("String Replace Tool");
+    ImGui::Text("Replace strings in contents and file/dir names under a directory");
+    
+    static char dirBuf[1024] = {0};
+    static char srcBuf[256] = {0};
+    static char dstBuf[256] = {0};
+
+    if (g_state.directoryPath.size() >= sizeof(dirBuf)) g_state.directoryPath.resize(sizeof(dirBuf) - 1);
+    if (g_state.sourceString.size() >= sizeof(srcBuf)) g_state.sourceString.resize(sizeof(srcBuf) - 1);
+    if (g_state.targetString.size() >= sizeof(dstBuf)) g_state.targetString.resize(sizeof(dstBuf) - 1);
+    std::snprintf(dirBuf, sizeof(dirBuf), "%s", g_state.directoryPath.c_str());
+    std::snprintf(srcBuf, sizeof(srcBuf), "%s", g_state.sourceString.c_str());
+    std::snprintf(dstBuf, sizeof(dstBuf), "%s", g_state.targetString.c_str());
+
+    if (ImGui::InputText("Directory", dirBuf, sizeof(dirBuf))) g_state.directoryPath = dirBuf;
+    if (ImGui::InputText("Source", srcBuf, sizeof(srcBuf))) g_state.sourceString = srcBuf;
+    if (ImGui::InputText("Target", dstBuf, sizeof(dstBuf))) g_state.targetString = dstBuf;
+
+    ImGui::Checkbox("Replace file contents", &g_state.includeContents);
+    ImGui::SameLine();
+    ImGui::Checkbox("Rename files/dirs", &g_state.includeFilenames);
+    ImGui::SameLine();
+    ImGui::Checkbox("Recurse subdirs", &g_state.recurseSubdirectories);
+
+    if (!g_state.isRunning)
+    {
+        if (ImGui::Button("Start"))
+        {
+            g_state.cancelRequested = false;
+            g_state.isRunning = true;
+            {
+                std::lock_guard<std::mutex> lock(g_state.logMutex);
+                g_state.logLines.clear();
+            }
+            g_state.worker = std::thread([](){ RunReplacement(); g_state.isRunning = false; });
+            g_state.worker.detach();
+        }
+    }
+    else
+    {
+        if (ImGui::Button("Cancel"))
+        {
+            g_state.cancelRequested = true;
+        }
+        ImGui::SameLine();
+        ImGui::Text("Processing... processed %llu, modified %llu, renamed %llu",
+            (unsigned long long)g_state.filesProcessed,
+            (unsigned long long)g_state.filesModified,
+            (unsigned long long)g_state.namesRenamed);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Log:");
+    ImGui::BeginChild("log", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+    {
+        std::lock_guard<std::mutex> lock(g_state.logMutex);
+        for (const std::string& line : g_state.logLines)
+        {
+            ImGui::TextUnformatted(line.c_str());
+        }
+        if (!g_state.logLines.empty()) ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
 
 #ifdef IMGUI_USE_D3D11
 // Win32 + DirectX11 backend
@@ -6,6 +271,8 @@
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <tchar.h>
+#include <cwchar>
+#include <cstdio>
 
 // Data
 static ID3D11Device*               g_pd3dDevice = NULL;
@@ -53,6 +320,35 @@ static bool CreateDeviceD3D(HWND hWnd)
     if (D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, createDeviceFlags, featureLevelArray, 2,
         D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext) != S_OK)
         return false;
+
+    // Log backend and adapter info
+    {
+        FILE* log = fopen("DearImGuiExample.log", "w");
+        if (log)
+        {
+            fprintf(log, "Backend: Direct3D11\n");
+            fprintf(log, "FeatureLevel: 0x%04x\n", (unsigned)featureLevel);
+            IDXGIDevice* pDXGIDevice = NULL;
+            if (SUCCEEDED(g_pd3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&pDXGIDevice)) && pDXGIDevice)
+            {
+                IDXGIAdapter* pAdapter = NULL;
+                if (SUCCEEDED(pDXGIDevice->GetAdapter(&pAdapter)) && pAdapter)
+                {
+                    DXGI_ADAPTER_DESC desc;
+                    if (SUCCEEDED(pAdapter->GetDesc(&desc)))
+                    {
+                        char name[256] = {0};
+                        size_t conv = 0;
+                        wcstombs_s(&conv, name, desc.Description, _TRUNCATE);
+                        fprintf(log, "Adapter: %s\n", name);
+                    }
+                    pAdapter->Release();
+                }
+                pDXGIDevice->Release();
+            }
+            fclose(log);
+        }
+    }
 
     CreateRenderTarget();
     return true;
@@ -148,11 +444,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Hello, Dear ImGui!");
-        ImGui::Text("This is a minimal Dear ImGui example.");
-        static float f = 0.0f; ImGui::SliderFloat("Float", &f, 0.0f, 1.0f);
-        static int counter = 0; if (ImGui::Button("Button")) counter++; ImGui::SameLine(); ImGui::Text("Counter = %d", counter);
-        ImGui::End();
+        DrawUI();
 
         ImGui::Render();
         const float clear_color_with_alpha[4] = { 0.45f, 0.55f, 0.60f, 1.00f };
@@ -214,6 +506,26 @@ int main(int, char**)
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
+    // Log backend and GL info
+    {
+        FILE* log = fopen("DearImGuiExample.log", "w");
+        if (log)
+        {
+            const unsigned char* renderer = glGetString(GL_RENDERER);
+            const unsigned char* version = glGetString(GL_VERSION);
+            fprintf(log, "Backend: OpenGL%s\n", 
+#ifdef IMGUI_USE_OPENGL2
+                "2"
+#else
+                "3"
+#endif
+            );
+            fprintf(log, "GL Renderer: %s\n", renderer ? (const char*)renderer : "<null>");
+            fprintf(log, "GL Version: %s\n", version ? (const char*)version : "<null>");
+            fclose(log);
+        }
+    }
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -241,11 +553,7 @@ int main(int, char**)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Hello, Dear ImGui!");
-        ImGui::Text("This is a minimal Dear ImGui example.");
-        static float f = 0.0f; ImGui::SliderFloat("Float", &f, 0.0f, 1.0f);
-        static int counter = 0; if (ImGui::Button("Button")) counter++; ImGui::SameLine(); ImGui::Text("Counter = %d", counter);
-        ImGui::End();
+        DrawUI();
 
         ImGui::Render();
         int display_w, display_h; glfwGetFramebufferSize(window, &display_w, &display_h);
