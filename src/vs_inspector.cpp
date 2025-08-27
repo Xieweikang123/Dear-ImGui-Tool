@@ -49,9 +49,14 @@ namespace VSInspector
     // Selections and persistence
     static std::string g_selectedSlnPath;
     static std::string g_selectedCursorFolder;
+    static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
+    
+    // Forward declare launch helpers
+    static bool LaunchVSWithSolution(const std::string& slnPath);
+    static bool LaunchCursorWithFolder(const std::string& folderPath);
 
     static fs::path GetPrefsFile()
     {
@@ -70,6 +75,10 @@ namespace VSInspector
         ofs << "sln=" << g_selectedSlnPath << "\n";
         ofs << "cursor=" << g_selectedCursorFolder << "\n";
         AppendLog(std::string("[prefs] saved to ") + p.string());
+        if (!g_selectedSlnPath.empty())
+            AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
+        if (!g_selectedCursorFolder.empty())
+            AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
     }
 
     static void LoadPrefs()
@@ -85,6 +94,122 @@ namespace VSInspector
             else if (line.rfind("cursor=", 0) == 0) g_selectedCursorFolder = line.substr(7);
         }
         AppendLog(std::string("[prefs] loaded from ") + p.string());
+        if (!g_selectedSlnPath.empty())
+            AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
+        if (!g_selectedCursorFolder.empty())
+            AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+        g_prefsLoaded = true;
+    }
+
+    static void EnsurePrefsLoaded()
+    {
+        if (!g_prefsLoaded)
+        {
+            LoadPrefs();
+        }
+    }
+
+    static bool LaunchVSWithSolution(const std::string& slnPath)
+    {
+        if (slnPath.empty()) return false;
+        
+        // Try to find Visual Studio installation
+        std::vector<std::string> vsPaths = {
+            "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\devenv.exe",
+            "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\Common7\\IDE\\devenv.exe",
+            "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\Common7\\IDE\\devenv.exe",
+            "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\Common7\\IDE\\devenv.exe",
+            "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\Common7\\IDE\\devenv.exe",
+            "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\IDE\\devenv.exe"
+        };
+        
+        std::string vsExePath;
+        for (const auto& path : vsPaths)
+        {
+            if (fs::exists(path))
+            {
+                vsExePath = path;
+                break;
+            }
+        }
+        
+        if (vsExePath.empty())
+        {
+            AppendLog("[launch] Visual Studio not found in common locations");
+            return false;
+        }
+        
+        std::string cmd = "\"" + vsExePath + "\" \"" + slnPath + "\"";
+        AppendLog("[launch] VS command: " + cmd);
+        
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOW;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            AppendLog("[launch] VS launched successfully");
+            return true;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            AppendLog("[launch] VS launch failed, error: " + std::to_string(error));
+            return false;
+        }
+    }
+
+    static bool LaunchCursorWithFolder(const std::string& folderPath)
+    {
+        if (folderPath.empty()) return false;
+        
+        // Try to find Cursor installation
+        std::vector<std::string> cursorPaths = {
+            "C:\\Users\\" + GetEnvU8("USERNAME") + "\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+            "C:\\Program Files\\Cursor\\Cursor.exe",
+            "C:\\Program Files (x86)\\Cursor\\Cursor.exe"
+        };
+        
+        std::string cursorExePath;
+        for (const auto& path : cursorPaths)
+        {
+            if (fs::exists(path))
+            {
+                cursorExePath = path;
+                break;
+            }
+        }
+        
+        if (cursorExePath.empty())
+        {
+            AppendLog("[launch] Cursor not found in common locations");
+            return false;
+        }
+        
+        std::string cmd = "\"" + cursorExePath + "\" \"" + folderPath + "\"";
+        AppendLog("[launch] Cursor command: " + cmd);
+        
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOW;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            AppendLog("[launch] Cursor launched successfully");
+            return true;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            AppendLog("[launch] Cursor launch failed, error: " + std::to_string(error));
+            return false;
+        }
     }
 
     static std::string WideToUtf8(const std::wstring& w)
@@ -690,6 +815,9 @@ namespace VSInspector
 
     void DrawVSUI()
     {
+        // Ensure preferences are loaded on first UI draw
+        EnsurePrefsLoaded();
+        
         ImGui::Begin("Running Visual Studio");
         if (ImGui::Button("Refresh"))
         {
@@ -766,6 +894,28 @@ namespace VSInspector
         }
         ImGui::EndChild();
 
+        // Current selections display
+        ImGui::Separator();
+        ImGui::Text("Current Saved Selections:");
+        if (!g_selectedSlnPath.empty())
+        {
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "VS Solution: %s", g_selectedSlnPath.c_str());
+        }
+        else
+        {
+            ImGui::TextDisabled("VS Solution: (none)");
+        }
+        if (!g_selectedCursorFolder.empty())
+        {
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Cursor Folder: %s", g_selectedCursorFolder.c_str());
+        }
+        else
+        {
+            ImGui::TextDisabled("Cursor Folder: (none)");
+        }
+        
+        ImGui::Separator();
+        
         // Persist controls
         if (ImGui::Button("Save selection"))
         {
@@ -775,6 +925,32 @@ namespace VSInspector
         if (ImGui::Button("Load selection"))
         {
             LoadPrefs();
+        }
+        
+        ImGui::Separator();
+        
+        // Launch controls
+        ImGui::Text("Quick Launch:");
+        if (!g_selectedSlnPath.empty())
+        {
+            ImGui::SameLine();
+            if (ImGui::Button("Launch VS"))
+            {
+                LaunchVSWithSolution(g_selectedSlnPath);
+            }
+        }
+        if (!g_selectedCursorFolder.empty())
+        {
+            ImGui::SameLine();
+            if (ImGui::Button("Launch Cursor"))
+            {
+                LaunchCursorWithFolder(g_selectedCursorFolder);
+            }
+        }
+        if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(No selection saved)");
         }
 
         if (ImGui::CollapsingHeader("Log (from AppendLog)", ImGuiTreeNodeFlags_DefaultOpen))
