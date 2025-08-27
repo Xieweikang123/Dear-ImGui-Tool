@@ -18,6 +18,8 @@
 #include <objbase.h>
 #include <oleauto.h>
 #include <filesystem>
+#include <commdlg.h>
+#pragma comment(lib, "Comdlg32.lib")
 namespace fs = std::filesystem;
 #endif
 
@@ -82,6 +84,33 @@ namespace VSInspector
     static bool LaunchVSWithSolution(const std::string& slnPath);
     static bool LaunchCursorWithFolder(const std::string& folderPath);
 
+    // File dialog helpers (ANSI)
+    static bool ShowOpenFileDialog(char* outPath, size_t outSize, const char* filter, const char* title)
+    {
+        OPENFILENAMEA ofn = {0};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = NULL;
+        ofn.lpstrFilter = filter; // e.g., "JSON Files\0*.json\0All Files\0*.*\0\0"
+        ofn.lpstrFile = outPath;
+        ofn.nMaxFile = (DWORD)outSize;
+        ofn.lpstrTitle = title;
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+        return GetOpenFileNameA(&ofn) == TRUE;
+    }
+    static bool ShowSaveFileDialog(char* outPath, size_t outSize, const char* filter, const char* title, const char* defExt)
+    {
+        OPENFILENAMEA ofn = {0};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = NULL;
+        ofn.lpstrFilter = filter;
+        ofn.lpstrFile = outPath;
+        ofn.nMaxFile = (DWORD)outSize;
+        ofn.lpstrTitle = title;
+        ofn.lpstrDefExt = defExt; // e.g., "json"
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+        return GetSaveFileNameA(&ofn) == TRUE;
+    }
+
     static fs::path GetPrefsFile()
     {
         std::string appdata = GetEnvU8("APPDATA");
@@ -91,7 +120,196 @@ namespace VSInspector
         return dir / "prefs.txt";
     }
 
-    static void SavePrefs()
+    static fs::path GetPrefsJsonFile()
+    {
+        std::string appdata = GetEnvU8("APPDATA");
+        fs::path dir = appdata.empty() ? fs::path(".") : fs::path(appdata);
+        dir /= "DearImGuiTool";
+        std::error_code ec; fs::create_directories(dir, ec);
+        return dir / "prefs.json";
+    }
+
+    static fs::path GetDefaultExportJsonFile()
+    {
+        // Prefer Desktop if available; otherwise use DearImGuiTool folder
+        std::string userProfile = GetEnvU8("USERPROFILE");
+        fs::path base = userProfile.empty() ? GetPrefsJsonFile().parent_path() : fs::path(userProfile) / "Desktop";
+        std::error_code ec; if (!fs::exists(base, ec)) base = GetPrefsJsonFile().parent_path();
+        // timestamp
+        std::time_t t = std::time(nullptr);
+        std::tm tmv; localtime_s(&tmv, &t);
+        char buf[64]; strftime(buf, sizeof(buf), "DearImGuiTool-configs-%Y%m%d-%H%M%S.json", &tmv);
+        return base / buf;
+    }
+
+    static std::string JsonEscape(const std::string& s)
+    {
+        std::string out; out.reserve(s.size() + 8);
+        for (char c : s)
+        {
+            switch (c)
+            {
+                case '\\': out += "\\\\"; break;
+                case '"': out += "\\\""; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: out += c; break;
+            }
+        }
+        return out;
+    }
+
+    // Forward declarations for legacy txt load/save
+    static void SavePrefsToTxt();
+    static bool LoadPrefsFromTxt();
+
+    static void SaveConfigsToJsonFile(const fs::path& filePath)
+    {
+        // Ensure current selection is reflected in g_savedConfigs
+        if (!g_currentConfigName.empty())
+        {
+            bool found = false;
+            for (auto& config : g_savedConfigs)
+            {
+                if (config.name == g_currentConfigName)
+                {
+                    config.vsSolutionPath = g_selectedSlnPath;
+                    config.cursorFolderPath = g_selectedCursorFolder;
+                    if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                SavedConfig newConfig;
+                newConfig.name = g_currentConfigName;
+                newConfig.vsSolutionPath = g_selectedSlnPath;
+                newConfig.cursorFolderPath = g_selectedCursorFolder;
+                newConfig.createdAt = (unsigned long long)time(nullptr);
+                g_savedConfigs.push_back(newConfig);
+            }
+        }
+
+        fs::path p = filePath;
+        std::ofstream ofs(p.string(), std::ios::binary);
+        if (!ofs) { AppendLog(std::string("[prefs] open for write failed: ") + p.string()); return; }
+        ofs << "{\n  \"configs\": [\n";
+        for (size_t i = 0; i < g_savedConfigs.size(); ++i)
+        {
+            const auto& c = g_savedConfigs[i];
+            ofs << "    {\n";
+            ofs << "      \"name\": \"" << JsonEscape(c.name) << "\",\n";
+            ofs << "      \"vs\": \"" << JsonEscape(c.vsSolutionPath) << "\",\n";
+            ofs << "      \"cursor\": \"" << JsonEscape(c.cursorFolderPath) << "\",\n";
+            ofs << "      \"createdAt\": " << c.createdAt << ",\n";
+            ofs << "      \"lastUsedAt\": " << c.lastUsedAt << "\n";
+            ofs << "    }" << (i + 1 < g_savedConfigs.size() ? ",\n" : "\n");
+        }
+        ofs << "  ]\n}";
+        AppendLog(std::string("[prefs] saved JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
+        if (!g_selectedSlnPath.empty()) AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
+        if (!g_selectedCursorFolder.empty()) AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+    }
+
+    static void SavePrefsToJson()
+    {
+        SaveConfigsToJsonFile(GetPrefsJsonFile());
+    }
+
+    static bool ParseJsonString(const std::string& s, size_t& pos, std::string& out)
+    {
+        out.clear();
+        if (pos >= s.size() || s[pos] != '"') return false;
+        pos++;
+        while (pos < s.size())
+        {
+            char c = s[pos++];
+            if (c == '"') return true;
+            if (c == '\\' && pos < s.size())
+            {
+                char e = s[pos++];
+                switch (e) { case 'n': out += '\n'; break; case 'r': out += '\r'; break; case 't': out += '\t'; break; case '"': out += '"'; break; case '\\': out += '\\'; break; default: out += e; break; }
+            }
+            else { out += c; }
+        }
+        return false;
+    }
+
+    static void SkipWs(const std::string& s, size_t& pos) { while (pos < s.size() && (s[pos]==' '||s[pos]=='\n'||s[pos]=='\r'||s[pos]=='\t')) pos++; }
+
+    static bool ParseConfigsFromJson(const std::string& content, std::vector<SavedConfig>& out)
+    {
+        out.clear();
+        size_t pos = 0; SkipWs(content, pos);
+        if (pos >= content.size() || content[pos] != '{') { return false; }
+        pos++; // '{'
+        bool ok = false;
+        while (pos < content.size())
+        {
+            SkipWs(content, pos);
+            if (pos < content.size() && content[pos] == '}') { pos++; break; }
+            // parse key
+            std::string key; if (!ParseJsonString(content, pos, key)) break;
+            SkipWs(content, pos); if (pos >= content.size() || content[pos] != ':') break; pos++;
+            SkipWs(content, pos);
+            if (key == "configs")
+            {
+                if (pos >= content.size() || content[pos] != '[') break; pos++;
+                SkipWs(content, pos);
+                while (pos < content.size() && content[pos] != ']')
+                {
+                    SkipWs(content, pos);
+                    if (pos >= content.size() || content[pos] != '{') break; pos++;
+                    SavedConfig c;
+                    while (pos < content.size())
+                    {
+                        SkipWs(content, pos);
+                        if (pos < content.size() && content[pos] == '}') { pos++; break; }
+                        std::string k; if (!ParseJsonString(content, pos, k)) { pos = content.size(); break; }
+                        SkipWs(content, pos); if (pos >= content.size() || content[pos] != ':') { pos = content.size(); break; } pos++;
+                        SkipWs(content, pos);
+                        if (k == "name" || k == "vs" || k == "cursor")
+                        {
+                            std::string v; if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
+                            if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else c.cursorFolderPath = v;
+                        }
+                        else if (k == "createdAt" || k == "lastUsedAt")
+                        {
+                            size_t start = pos; while (pos < content.size() && (isdigit((unsigned char)content[pos]) || content[pos]=='-')) pos++; unsigned long long val = strtoull(content.substr(start, pos-start).c_str(), nullptr, 10);
+                            if (k == "createdAt") c.createdAt = val; else c.lastUsedAt = val;
+                        }
+                        SkipWs(content, pos);
+                        if (pos < content.size() && content[pos] == ',') { pos++; }
+                    }
+                    if (!c.name.empty()) out.push_back(c);
+                    SkipWs(content, pos);
+                    if (pos < content.size() && content[pos] == ',') { pos++; }
+                    SkipWs(content, pos);
+                }
+                if (pos < content.size() && content[pos] == ']') { pos++; ok = true; }
+            }
+            SkipWs(content, pos);
+            if (pos < content.size() && content[pos] == ',') { pos++; continue; }
+        }
+        return ok;
+    }
+
+    static bool LoadPrefsFromJson()
+    {
+        g_savedConfigs.clear();
+        fs::path p = GetPrefsJsonFile();
+        std::error_code ec; if (!fs::exists(p, ec)) { return false; }
+        std::ifstream ifs(p.string(), std::ios::binary);
+        if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return false; }
+        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        bool ok = ParseConfigsFromJson(content, g_savedConfigs);
+        if (ok) AppendLog(std::string("[prefs] loaded JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
+        return ok;
+    }
+
+    static void SavePrefsToTxt()
     {
         // Save current selection to the current config
         if (!g_currentConfigName.empty())
@@ -142,13 +360,13 @@ namespace VSInspector
             AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
     }
 
-    static void LoadPrefs()
+    static bool LoadPrefsFromTxt()
     {
         g_savedConfigs.clear();
         fs::path p = GetPrefsFile();
-        std::error_code ec; if (!fs::exists(p, ec)) { AppendLog("[prefs] no prefs file"); return; }
+        std::error_code ec; if (!fs::exists(p, ec)) { AppendLog("[prefs] no prefs file"); return false; }
         std::ifstream ifs(p.string(), std::ios::binary);
-        if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return; }
+        if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return false; }
         
         std::string line;
         SavedConfig currentConfig;
@@ -196,6 +414,26 @@ namespace VSInspector
         }
         
         AppendLog(std::string("[prefs] loaded ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
+        return true;
+    }
+
+    static void SavePrefs()
+    {
+        // Prefer JSON; also write legacy txt for backward compatibility
+        SavePrefsToJson();
+        SavePrefsToTxt();
+    }
+
+    static void LoadPrefs()
+    {
+        // Try JSON first; fall back to txt
+        if (!LoadPrefsFromJson())
+        {
+            if (!LoadPrefsFromTxt())
+            {
+                AppendLog("[prefs] no prefs found in JSON or TXT");
+            }
+        }
         g_prefsLoaded = true;
     }
 
@@ -242,6 +480,33 @@ namespace VSInspector
             }
         }
         AppendLog("[prefs] config not found for deletion: " + configName);
+    }
+
+    // Merge helpers for import
+    static void MergeConfigs(std::vector<SavedConfig>& into, const std::vector<SavedConfig>& incoming)
+    {
+        for (const auto& inc : incoming)
+        {
+            if (inc.name.empty()) continue;
+            bool found = false;
+            for (auto& cur : into)
+            {
+                if (cur.name == inc.name)
+                {
+                    found = true;
+                    // Merge rule: keep earliest createdAt, max lastUsedAt, overwrite paths if provided
+                    if (cur.createdAt == 0 || (inc.createdAt != 0 && inc.createdAt < cur.createdAt)) cur.createdAt = inc.createdAt;
+                    if (inc.lastUsedAt > cur.lastUsedAt) cur.lastUsedAt = inc.lastUsedAt;
+                    if (!inc.vsSolutionPath.empty()) cur.vsSolutionPath = inc.vsSolutionPath;
+                    if (!inc.cursorFolderPath.empty()) cur.cursorFolderPath = inc.cursorFolderPath;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                into.push_back(inc);
+            }
+        }
     }
 
     static void BeginEditConfig(const SavedConfig& cfg)
@@ -1506,6 +1771,93 @@ namespace VSInspector
             if (ImGui::Button("[Reload All Configs]"))
             {
                 LoadPrefs();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("[Export JSON]"))
+            {
+                ImGui::OpenPopup("Export JSON");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("[Import JSON]"))
+            {
+                ImGui::OpenPopup("Import JSON");
+            }
+            // Export modal
+            if (ImGui::BeginPopupModal("Export JSON", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                static char exportPath[1024] = "";
+                if (exportPath[0] == '\0')
+                {
+                    std::string def = GetDefaultExportJsonFile().string();
+                    strncpy(exportPath, def.c_str(), sizeof(exportPath) - 1);
+                }
+                ImGui::InputText("File path", exportPath, sizeof(exportPath));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Browse..."))
+                {
+                    char buf[1024] = {0}; strncpy(buf, exportPath, sizeof(buf)-1);
+                    if (ShowSaveFileDialog(buf, sizeof(buf), "JSON Files\0*.json\0All Files\0*.*\0\0", "Export Configs", "json"))
+                    {
+                        strncpy(exportPath, buf, sizeof(exportPath)-1);
+                        AppendLog(std::string("[prefs] export path selected: ") + exportPath);
+                    }
+                }
+                if (ImGui::Button("Save", ImVec2(120, 0)))
+                {
+                    if (strlen(exportPath) > 0) { SaveConfigsToJsonFile(fs::path(exportPath)); }
+                    AppendLog(std::string("[prefs] exported to ") + exportPath);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0)))
+                {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+            // Import modal
+            if (ImGui::BeginPopupModal("Import JSON", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                static char importPath[1024] = "";
+                ImGui::InputText("File path", importPath, sizeof(importPath));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Browse..."))
+                {
+                    char buf[1024] = {0}; strncpy(buf, importPath, sizeof(buf)-1);
+                    if (ShowOpenFileDialog(buf, sizeof(buf), "JSON Files\0*.json\0All Files\0*.*\0\0", "Import Configs"))
+                    {
+                        strncpy(importPath, buf, sizeof(importPath)-1);
+                        AppendLog(std::string("[prefs] import path selected: ") + importPath);
+                    }
+                }
+                if (ImGui::Button("Import", ImVec2(120, 0)))
+                {
+                    std::vector<SavedConfig> incoming;
+                    std::ifstream ifs(std::string(importPath), std::ios::binary);
+                    if (ifs)
+                    {
+                        std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                        if (!ParseConfigsFromJson(content, incoming))
+                        {
+                            AppendLog("[prefs] import failed: invalid JSON content");
+                        }
+                    }
+                    else { AppendLog("[prefs] import failed: cannot open file"); }
+                    if (!incoming.empty())
+                    {
+                        MergeConfigs(g_savedConfigs, incoming);
+                        SavePrefs();
+                        AppendLog(std::string("[prefs] imported ") + std::to_string((int)incoming.size()) + " config(s) from " + importPath);
+                    }
+                    else { AppendLog("[prefs] import found 0 valid configs"); }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0)))
+                {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
             }
         }
         
