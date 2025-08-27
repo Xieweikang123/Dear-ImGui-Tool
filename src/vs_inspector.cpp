@@ -1234,7 +1234,31 @@ namespace VSInspector
                     ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
-                        DeleteConfig(config.name);
+                        // 显示确认对话框
+                        ImGui::OpenPopup(("Confirm Delete##" + config.name).c_str());
+                    }
+                    
+                    // 确认删除弹窗
+                    if (ImGui::BeginPopupModal(("Confirm Delete##" + config.name).c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::Text("Are you sure you want to delete configuration '%s'?", config.name.c_str());
+                        ImGui::Text("This action cannot be undone.");
+                        ImGui::Separator();
+                        
+                        if (ImGui::Button("Yes, Delete", ImVec2(120, 0)))
+                        {
+                            DeleteConfig(config.name);
+                            ImGui::CloseCurrentPopup();
+                            // 强制UI更新
+                            ImGui::SetWindowFocus();
+                        }
+                        ImGui::SetItemDefaultFocus();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel", ImVec2(120, 0)))
+                        {
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
                     }
                     ImGui::EndGroup();
                     ImGui::Spacing();
@@ -1287,7 +1311,31 @@ namespace VSInspector
                     ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
-                        DeleteConfig(config.name);
+                        // 显示确认对话框
+                        ImGui::OpenPopup(("Confirm Delete##" + config.name).c_str());
+                    }
+                    
+                    // 确认删除弹窗
+                    if (ImGui::BeginPopupModal(("Confirm Delete##" + config.name).c_str(), NULL, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::Text("Are you sure you want to delete configuration '%s'?", config.name.c_str());
+                        ImGui::Text("This action cannot be undone.");
+                        ImGui::Separator();
+                        
+                        if (ImGui::Button("Yes, Delete", ImVec2(120, 0)))
+                        {
+                            DeleteConfig(config.name);
+                            ImGui::CloseCurrentPopup();
+                            // 强制UI更新
+                            ImGui::SetWindowFocus();
+                        }
+                        ImGui::SetItemDefaultFocus();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel", ImVec2(120, 0)))
+                        {
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
                     }
                     ImGui::EndGroup();
                     ImGui::Spacing();
