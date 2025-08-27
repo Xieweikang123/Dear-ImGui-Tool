@@ -46,9 +46,19 @@ namespace VSInspector
     static std::vector<CursorInstance> g_cursorList;
     static std::mutex g_vsMutexVS;
 
+    // Configuration structure
+    struct SavedConfig
+    {
+        std::string name;
+        std::string vsSolutionPath;
+        std::string cursorFolderPath;
+    };
+
     // Selections and persistence
+    static std::vector<SavedConfig> g_savedConfigs;
     static std::string g_selectedSlnPath;
     static std::string g_selectedCursorFolder;
+    static std::string g_currentConfigName;
     static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
     // Forward declare env helper used by prefs
@@ -69,12 +79,45 @@ namespace VSInspector
 
     static void SavePrefs()
     {
+        // Save current selection to the current config
+        if (!g_currentConfigName.empty())
+        {
+            // Find existing config or create new one
+            bool found = false;
+            for (auto& config : g_savedConfigs)
+            {
+                if (config.name == g_currentConfigName)
+                {
+                    config.vsSolutionPath = g_selectedSlnPath;
+                    config.cursorFolderPath = g_selectedCursorFolder;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                SavedConfig newConfig;
+                newConfig.name = g_currentConfigName;
+                newConfig.vsSolutionPath = g_selectedSlnPath;
+                newConfig.cursorFolderPath = g_selectedCursorFolder;
+                g_savedConfigs.push_back(newConfig);
+            }
+        }
+
+        // Save all configs to file
         fs::path p = GetPrefsFile();
         std::ofstream ofs(p.string(), std::ios::binary);
         if (!ofs) { AppendLog(std::string("[prefs] open for write failed: ") + p.string()); return; }
-        ofs << "sln=" << g_selectedSlnPath << "\n";
-        ofs << "cursor=" << g_selectedCursorFolder << "\n";
-        AppendLog(std::string("[prefs] saved to ") + p.string());
+        
+        for (const auto& config : g_savedConfigs)
+        {
+            ofs << "config=" << config.name << "\n";
+            ofs << "sln=" << config.vsSolutionPath << "\n";
+            ofs << "cursor=" << config.cursorFolderPath << "\n";
+            ofs << "---\n";  // Separator between configs
+        }
+        
+        AppendLog(std::string("[prefs] saved ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
         if (!g_selectedSlnPath.empty())
             AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
         if (!g_selectedCursorFolder.empty())
@@ -83,22 +126,71 @@ namespace VSInspector
 
     static void LoadPrefs()
     {
+        g_savedConfigs.clear();
         fs::path p = GetPrefsFile();
         std::error_code ec; if (!fs::exists(p, ec)) { AppendLog("[prefs] no prefs file"); return; }
         std::ifstream ifs(p.string(), std::ios::binary);
         if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return; }
+        
         std::string line;
+        SavedConfig currentConfig;
+        bool inConfig = false;
+        
         while (std::getline(ifs, line))
         {
-            if (line.rfind("sln=", 0) == 0) g_selectedSlnPath = line.substr(4);
-            else if (line.rfind("cursor=", 0) == 0) g_selectedCursorFolder = line.substr(7);
+            if (line == "---")
+            {
+                // End of config, save it
+                if (inConfig && !currentConfig.name.empty())
+                {
+                    g_savedConfigs.push_back(currentConfig);
+                }
+                currentConfig = SavedConfig();
+                inConfig = false;
+            }
+            else if (line.rfind("config=", 0) == 0)
+            {
+                currentConfig.name = line.substr(7);
+                inConfig = true;
+            }
+            else if (line.rfind("sln=", 0) == 0)
+            {
+                currentConfig.vsSolutionPath = line.substr(4);
+            }
+            else if (line.rfind("cursor=", 0) == 0)
+            {
+                currentConfig.cursorFolderPath = line.substr(7);
+            }
         }
-        AppendLog(std::string("[prefs] loaded from ") + p.string());
-        if (!g_selectedSlnPath.empty())
-            AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
-        if (!g_selectedCursorFolder.empty())
-            AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+        
+        // Don't forget the last config if no separator
+        if (inConfig && !currentConfig.name.empty())
+        {
+            g_savedConfigs.push_back(currentConfig);
+        }
+        
+        AppendLog(std::string("[prefs] loaded ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
         g_prefsLoaded = true;
+    }
+
+    static void LoadConfig(const std::string& configName)
+    {
+        for (const auto& config : g_savedConfigs)
+        {
+            if (config.name == configName)
+            {
+                g_selectedSlnPath = config.vsSolutionPath;
+                g_selectedCursorFolder = config.cursorFolderPath;
+                g_currentConfigName = configName;
+                AppendLog("[prefs] loaded config: " + configName);
+                if (!g_selectedSlnPath.empty())
+                    AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
+                if (!g_selectedCursorFolder.empty())
+                    AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+                return;
+            }
+        }
+        AppendLog("[prefs] config not found: " + configName);
     }
 
     static void EnsurePrefsLoaded()
@@ -894,9 +986,45 @@ namespace VSInspector
         }
         ImGui::EndChild();
 
+        // Configuration management
+        ImGui::Separator();
+        ImGui::Text("Configuration Management:");
+        
+        // Config name input
+        static char configName[256] = "";
+        ImGui::InputText("Config Name", configName, sizeof(configName));
+        ImGui::SameLine();
+        if (ImGui::Button("Save as Config"))
+        {
+            if (strlen(configName) > 0)
+            {
+                g_currentConfigName = configName;
+                SavePrefs();
+                AppendLog("[prefs] saved as config: " + g_currentConfigName);
+            }
+        }
+        
+        // Config selection
+        if (!g_savedConfigs.empty())
+        {
+            ImGui::Text("Saved Configs:");
+            for (const auto& config : g_savedConfigs)
+            {
+                ImGui::SameLine();
+                if (ImGui::Button(("Load " + config.name).c_str()))
+                {
+                    LoadConfig(config.name);
+                }
+            }
+        }
+        
         // Current selections display
         ImGui::Separator();
-        ImGui::Text("Current Saved Selections:");
+        ImGui::Text("Current Selections:");
+        if (!g_currentConfigName.empty())
+        {
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Active Config: %s", g_currentConfigName.c_str());
+        }
         if (!g_selectedSlnPath.empty())
         {
             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "VS Solution: %s", g_selectedSlnPath.c_str());
@@ -916,13 +1044,13 @@ namespace VSInspector
         
         ImGui::Separator();
         
-        // Persist controls
+        // Legacy controls (for backward compatibility)
         if (ImGui::Button("Save selection"))
         {
             SavePrefs();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Load selection"))
+        if (ImGui::Button("Load all configs"))
         {
             LoadPrefs();
         }
