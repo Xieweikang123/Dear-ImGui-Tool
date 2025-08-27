@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <objbase.h>
 #include <oleauto.h>
 #include <filesystem>
@@ -58,6 +59,7 @@ namespace VSInspector
     static std::vector<SavedConfig> g_savedConfigs;
     static std::string g_selectedSlnPath;
     static std::string g_selectedCursorFolder;
+    static std::unordered_set<std::string> g_selectedCursorFolders;
     static std::string g_currentConfigName;
     static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
@@ -1101,10 +1103,19 @@ namespace VSInspector
 
                     // Action
                     ImGui::TableSetColumnIndex(3);
-                    bool isSelected = (g_selectedCursorFolder == c.folderPath);
-                    if (ImGui::SmallButton((std::string(isSelected ? "[Selected] " : "[Use] ") + "##" + std::to_string((unsigned long)c.pid)).c_str()))
+                    bool isSelected = (g_selectedCursorFolders.find(c.folderPath) != g_selectedCursorFolders.end());
+                    const char* label = isSelected ? "[Deselect]" : "[Select]";
+                    if (ImGui::SmallButton((std::string(label) + "##" + std::to_string((unsigned long)c.pid)).c_str()))
                     {
-                        g_selectedCursorFolder = c.folderPath;
+                        if (isSelected)
+                            g_selectedCursorFolders.erase(c.folderPath);
+                        else
+                            g_selectedCursorFolders.insert(c.folderPath);
+                        // Keep backward-compatible single selection too
+                        if (isSelected && g_selectedCursorFolder == c.folderPath)
+                            g_selectedCursorFolder.clear();
+                        else if (!isSelected)
+                            g_selectedCursorFolder = c.folderPath;
                     }
                 }
 
@@ -1136,9 +1147,13 @@ namespace VSInspector
         {
             ImGui::TextWrapped("VS: %s", g_selectedSlnPath.c_str());
         }
-        if (!g_selectedCursorFolder.empty())
+        if (!g_selectedCursorFolders.empty())
         {
-            ImGui::TextWrapped("Cursor: %s", g_selectedCursorFolder.c_str());
+            ImGui::Text("Cursor selected (%d):", (int)g_selectedCursorFolders.size());
+            for (const auto& f : g_selectedCursorFolders)
+            {
+                ImGui::TextWrapped("- %s", f.c_str());
+            }
         }
         
         ImGui::Spacing();
@@ -1152,11 +1167,16 @@ namespace VSInspector
                 LaunchVSWithSolution(g_selectedSlnPath);
             }
         }
-        if (!g_selectedCursorFolder.empty())
+        // Launch all selected Cursor folders (multi-select)
+        if (!g_selectedCursorFolders.empty())
         {
-            if (ImGui::Button("[Launch Cursor]"))
+            std::string launchLabel = std::string("[Launch Selected (") + std::to_string((int)g_selectedCursorFolders.size()) + ")]";
+            if (ImGui::Button(launchLabel.c_str()))
             {
-                LaunchCursorWithFolder(g_selectedCursorFolder);
+                for (const auto& folder : g_selectedCursorFolders)
+                {
+                    LaunchCursorWithFolder(folder);
+                }
             }
         }
         if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
