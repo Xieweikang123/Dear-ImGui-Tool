@@ -1221,7 +1221,11 @@ namespace VSInspector
                 for (const auto& config : g_savedConfigs)
                 {
                     ImGui::BeginGroup();
-                    ImGui::Text("[Config] %s", config.name.c_str());
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
+                    ImGui::Text(" [Config] %s", config.name.c_str());
+                    ImGui::PopStyleVar();
+                    ImGui::PopStyleColor();
                     if (!config.vsSolutionPath.empty())
                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
                     if (!config.cursorFolderPath.empty())
@@ -1298,7 +1302,11 @@ namespace VSInspector
                 for (const auto& config : g_savedConfigs)
                 {
                     ImGui::BeginGroup();
-                    ImGui::Text("[Config] %s", config.name.c_str());
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
+                    ImGui::Text(" [Config] %s", config.name.c_str());
+                    ImGui::PopStyleVar();
+                    ImGui::PopStyleColor();
                     if (!config.vsSolutionPath.empty())
                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
                     if (!config.cursorFolderPath.empty())
