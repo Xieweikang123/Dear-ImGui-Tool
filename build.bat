@@ -1,6 +1,15 @@
 @echo off
 echo Building Dear ImGui project...
 
+REM Kill any existing DearImGuiExample.exe processes
+echo Stopping any running DearImGuiExample.exe processes...
+taskkill /f /im DearImGuiExample.exe >nul 2>&1
+if errorlevel 1 (
+    echo No running DearImGuiExample.exe processes found.
+) else (
+    echo Successfully stopped DearImGuiExample.exe processes.
+)
+
 REM Check if imgui directory exists
 if not exist imgui (
     echo Error: imgui directory not found!

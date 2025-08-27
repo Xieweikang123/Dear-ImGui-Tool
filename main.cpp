@@ -646,7 +646,62 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Init(glsl_version);
 #endif
 
-    io.Fonts->AddFontDefault();
+    // 改进的字体加载策略
+    ImFont* defaultFont = io.Fonts->AddFontDefault();
+    
+    // 尝试加载支持中文和emoji的字体
+    ImFont* chineseFont = nullptr;
+    const char* chineseFontPaths[] = {
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        "C:/Windows/Fonts/msyh.ttf",
+        "C:/Windows/Fonts/simsun.ttf"
+    };
+    
+    for (const char* fontPath : chineseFontPaths)
+    {
+        chineseFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        if (chineseFont) 
+        {
+            AppendLog(std::string("[font] Loaded Chinese font: ") + fontPath);
+            break;
+        }
+    }
+    
+    // 尝试加载emoji字体作为补充
+    ImFont* emojiFont = nullptr;
+    const char* emojiFontPaths[] = {
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "C:/Windows/Fonts/seguiemj.ttc",
+        "C:/Windows/Fonts/arial.ttf"
+    };
+    
+    for (const char* fontPath : emojiFontPaths)
+    {
+        emojiFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
+        if (emojiFont) 
+        {
+            AppendLog(std::string("[font] Loaded emoji font: ") + fontPath);
+            break;
+        }
+    }
+    
+    // 设置字体优先级：中文字体 > emoji字体 > 默认字体
+    if (chineseFont)
+    {
+        io.FontDefault = chineseFont;
+        AppendLog("[font] Using Chinese font as default");
+    }
+    else if (emojiFont)
+    {
+        io.FontDefault = emojiFont;
+        AppendLog("[font] Using emoji font as default");
+    }
+    else
+    {
+        io.FontDefault = defaultFont;
+        AppendLog("[font] Using default font");
+    }
 
     while (!glfwWindowShouldClose(window))
     {

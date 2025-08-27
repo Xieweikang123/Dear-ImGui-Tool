@@ -193,6 +193,27 @@ namespace VSInspector
         AppendLog("[prefs] config not found: " + configName);
     }
 
+    static void DeleteConfig(const std::string& configName)
+    {
+        for (auto it = g_savedConfigs.begin(); it != g_savedConfigs.end(); ++it)
+        {
+            if (it->name == configName)
+            {
+                g_savedConfigs.erase(it);
+                // If we deleted the current config, clear the current config name
+                if (g_currentConfigName == configName)
+                {
+                    g_currentConfigName.clear();
+                }
+                // Save the updated configs to file
+                SavePrefs();
+                AppendLog("[prefs] deleted config: " + configName);
+                return;
+            }
+        }
+        AppendLog("[prefs] config not found for deletion: " + configName);
+    }
+
     static void EnsurePrefsLoaded()
     {
         if (!g_prefsLoaded)
@@ -1013,18 +1034,45 @@ namespace VSInspector
         // Ensure preferences are loaded on first UI draw
         EnsurePrefsLoaded();
         
-        ImGui::Begin("Running Visual Studio");
-        if (ImGui::Button("Refresh"))
+        // 设置窗口为可调整大小，并设置最小尺寸
+        ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
+        ImGui::Begin("VS & Cursor Manager", nullptr, ImGuiWindowFlags_None);
+        
+        // Header with refresh controls
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor Manager");
+        ImGui::SameLine();
+        if (ImGui::Button("[Refresh]"))
         {
             ReplaceTool::AppendLog("[vs] UI: Refresh clicked");
             Refresh();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Auto-Refresh"))
+        if (ImGui::Button("[Auto-Refresh]"))
         {
             Refresh();
         }
-
+        
+        ImGui::Separator();
+        
+        // 获取当前窗口宽度，动态调整布局
+        float windowWidth = ImGui::GetWindowWidth();
+        bool useWideLayout = windowWidth > 1200;
+        
+        if (useWideLayout)
+        {
+            // 宽屏布局：三列
+            ImGui::Columns(3, "MainContent", true);
+        }
+        else
+        {
+            // 窄屏布局：两列
+            ImGui::Columns(2, "MainContent", true);
+        }
+        
+        // Left column: Running Instances
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Running Instances]");
+        ImGui::Separator();
+        
         std::vector<VSInstance> local;
         std::vector<CursorInstance> localCursor;
         {
@@ -1032,162 +1080,247 @@ namespace VSInspector
             local = g_vsList;
             localCursor = g_cursorList;
         }
-
-        ImGui::Text("Found %d instance(s)", (int)local.size());
-        ImGui::Separator();
-        // Selection states
-        static DWORD selectedVsPid = 0;
-        static DWORD selectedCursorPid = 0;
-
-        ImGui::BeginChild("vslist", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-        for (const auto& inst : local)
+        
+        // VS Instances
+        if (!local.empty())
         {
-            char selLabel[64];
-            snprintf(selLabel, sizeof(selLabel), "VS PID: %lu", (unsigned long)inst.pid);
-            bool selected = (selectedVsPid == inst.pid);
-            if (ImGui::Selectable(selLabel, selected)) selectedVsPid = inst.pid;
-            if (!inst.windowTitle.empty())
-                ImGui::TextDisabled("Title: %s", inst.windowTitle.c_str());
-            if (!inst.exePath.empty())
-                ImGui::TextDisabled("Path: %s", inst.exePath.c_str());
-            if (!inst.solutionPath.empty())
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Visual Studio (%d)", (int)local.size());
+            for (const auto& inst : local)
             {
-                ImGui::TextDisabled("Solution: %s", inst.solutionPath.c_str());
-                bool checked = (g_selectedSlnPath == inst.solutionPath);
-                std::string chkId = std::string("Use this solution##") + std::to_string((unsigned long)inst.pid);
-                if (ImGui::Checkbox(chkId.c_str(), &checked))
+                ImGui::BeginGroup();
+                ImGui::Text("[PID] %lu", (unsigned long)inst.pid);
+                if (!inst.windowTitle.empty())
                 {
-                    g_selectedSlnPath = checked ? inst.solutionPath : std::string();
+                    ImGui::TextWrapped("[Title] %s", inst.windowTitle.c_str());
                 }
+                if (!inst.solutionPath.empty())
+                {
+                    ImGui::TextWrapped("[Path] %s", inst.solutionPath.c_str());
+                    bool checked = (g_selectedSlnPath == inst.solutionPath);
+                    std::string chkId = std::string("[Use this solution]##") + std::to_string((unsigned long)inst.pid);
+                    if (ImGui::Checkbox(chkId.c_str(), &checked))
+                    {
+                        g_selectedSlnPath = checked ? inst.solutionPath : std::string();
+                    }
+                }
+                ImGui::EndGroup();
+                ImGui::Spacing();
             }
-            if (!inst.activeDocumentPath.empty())
-                ImGui::TextDisabled("ActiveDocument: %s", inst.activeDocumentPath.c_str());
-            ImGui::Separator();
         }
-        // Append Cursor entries in the same list (peer to VS)
-        for (const auto& c : localCursor)
+        else
         {
-            if (c.folderPath.empty()) continue; // skip cursors without resolved folder
-            char selLabel[64];
-            snprintf(selLabel, sizeof(selLabel), "Cursor PID: %lu", (unsigned long)c.pid);
-            bool selected = (selectedCursorPid == c.pid);
-            if (ImGui::Selectable(selLabel, selected)) selectedCursorPid = c.pid;
-            if (!c.windowTitle.empty())
-                ImGui::TextDisabled("Title: %s", c.windowTitle.c_str());
-            if (!c.exePath.empty())
-                ImGui::TextDisabled("Path: %s", c.exePath.c_str());
+            ImGui::TextDisabled("No Visual Studio instances found");
+        }
+        
+        ImGui::Spacing();
+        
+        // Cursor Instances
+        if (!localCursor.empty())
+        {
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Cursor (%d)", (int)localCursor.size());
+            for (const auto& c : localCursor)
             {
-                ImGui::TextDisabled("Folder: %s", c.folderPath.c_str());
+                if (c.folderPath.empty()) continue;
+                ImGui::BeginGroup();
+                ImGui::Text("[PID] %lu", (unsigned long)c.pid);
+                if (!c.windowTitle.empty())
+                {
+                    ImGui::TextWrapped("[Title] %s", c.windowTitle.c_str());
+                }
+                ImGui::TextWrapped("[Path] %s", c.folderPath.c_str());
                 bool checked = (g_selectedCursorFolder == c.folderPath);
-                std::string chkId = std::string("Use this folder##") + std::to_string((unsigned long)c.pid);
+                std::string chkId = std::string("[Use this folder]##") + std::to_string((unsigned long)c.pid);
                 if (ImGui::Checkbox(chkId.c_str(), &checked))
                 {
                     g_selectedCursorFolder = checked ? c.folderPath : std::string();
                 }
+                ImGui::EndGroup();
+                ImGui::Spacing();
             }
-            ImGui::Separator();
-        }
-        ImGui::EndChild();
-
-        // Configuration management
-        ImGui::Separator();
-        ImGui::Text("Configuration Management:");
-        
-        // Config name input
-        static char configName[256] = "";
-        ImGui::InputText("Config Name", configName, sizeof(configName));
-        ImGui::SameLine();
-        if (ImGui::Button("Save as Config"))
-        {
-            if (strlen(configName) > 0)
-            {
-                g_currentConfigName = configName;
-                SavePrefs();
-                AppendLog("[prefs] saved as config: " + g_currentConfigName);
-            }
-        }
-        
-        // Config selection
-        if (!g_savedConfigs.empty())
-        {
-            ImGui::Text("Saved Configs:");
-            for (const auto& config : g_savedConfigs)
-            {
-                ImGui::SameLine();
-                if (ImGui::Button(("Load " + config.name).c_str()))
-                {
-                    LoadConfig(config.name);
-                }
-            }
-        }
-        
-        // Current selections display
-        ImGui::Separator();
-        ImGui::Text("Current Selections:");
-        if (!g_currentConfigName.empty())
-        {
-            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Active Config: %s", g_currentConfigName.c_str());
-        }
-        if (!g_selectedSlnPath.empty())
-        {
-            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "VS Solution: %s", g_selectedSlnPath.c_str());
         }
         else
         {
-            ImGui::TextDisabled("VS Solution: (none)");
+            ImGui::TextDisabled("No Cursor instances found");
+        }
+        
+        // Middle/Right column: Current Status & Quick Actions
+        ImGui::NextColumn();
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Current Status & Actions]");
+        ImGui::Separator();
+        
+        // Current Status
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "[Current Status]");
+        if (!g_currentConfigName.empty())
+        {
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Active: %s", g_currentConfigName.c_str());
+        }
+        else
+        {
+            ImGui::TextDisabled("No active configuration");
+        }
+        
+        if (!g_selectedSlnPath.empty())
+        {
+            ImGui::TextWrapped("VS: %s", g_selectedSlnPath.c_str());
         }
         if (!g_selectedCursorFolder.empty())
         {
-            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Cursor Folder: %s", g_selectedCursorFolder.c_str());
-        }
-        else
-        {
-            ImGui::TextDisabled("Cursor Folder: (none)");
+            ImGui::TextWrapped("Cursor: %s", g_selectedCursorFolder.c_str());
         }
         
-        ImGui::Separator();
+        ImGui::Spacing();
         
-        // Legacy controls (for backward compatibility)
-        if (ImGui::Button("Save selection"))
-        {
-            SavePrefs();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Load all configs"))
-        {
-            LoadPrefs();
-        }
-        
-        ImGui::Separator();
-        
-        // Launch controls
-        ImGui::Text("Quick Launch:");
+        // Quick Actions
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "[Quick Actions]");
         if (!g_selectedSlnPath.empty())
         {
-            ImGui::SameLine();
-            if (ImGui::Button("Launch VS"))
+            if (ImGui::Button("[Launch VS]"))
             {
                 LaunchVSWithSolution(g_selectedSlnPath);
             }
         }
         if (!g_selectedCursorFolder.empty())
         {
-            ImGui::SameLine();
-            if (ImGui::Button("Launch Cursor"))
+            if (ImGui::Button("[Launch Cursor]"))
             {
                 LaunchCursorWithFolder(g_selectedCursorFolder);
             }
         }
         if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
         {
-            ImGui::SameLine();
-            ImGui::TextDisabled("(No selection saved)");
+            ImGui::TextDisabled("Select VS solution or Cursor folder first");
         }
-
-        if (ImGui::CollapsingHeader("Log (from AppendLog)", ImGuiTreeNodeFlags_DefaultOpen))
+        
+        // Third column (only in wide layout): Configuration Management
+        if (useWideLayout)
         {
-            ReplaceTool::DrawSharedLog("vslog", 150.0f);
+            ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
+            ImGui::Separator();
+            
+            // Save new configuration
+            static char configName[256] = "";
+            ImGui::InputText("Config Name", configName, sizeof(configName));
+            if (ImGui::Button("[Save Current as New Config]"))
+            {
+                if (strlen(configName) > 0)
+                {
+                    g_currentConfigName = configName;
+                    SavePrefs();
+                    AppendLog("[prefs] saved as config: " + g_currentConfigName);
+                    memset(configName, 0, sizeof(configName)); // Clear input after save
+                }
+            }
+            
+            ImGui::Spacing();
+            
+            // Load existing configurations
+            if (!g_savedConfigs.empty())
+            {
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                for (const auto& config : g_savedConfigs)
+                {
+                    ImGui::BeginGroup();
+                    ImGui::Text("[Config] %s", config.name.c_str());
+                    if (!config.vsSolutionPath.empty())
+                        ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
+                    if (!config.cursorFolderPath.empty())
+                        ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                    
+                    if (ImGui::Button(("[Load]##" + config.name).c_str()))
+                    {
+                        LoadConfig(config.name);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(("[Delete]##" + config.name).c_str()))
+                    {
+                        DeleteConfig(config.name);
+                    }
+                    ImGui::EndGroup();
+                    ImGui::Spacing();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No saved configurations");
+            }
         }
+        else
+        {
+            // In narrow layout, put configuration management in the same column
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
+            
+            // Save new configuration
+            static char configName[256] = "";
+            ImGui::InputText("Config Name", configName, sizeof(configName));
+            if (ImGui::Button("[Save Current as New Config]"))
+            {
+                if (strlen(configName) > 0)
+                {
+                    g_currentConfigName = configName;
+                    SavePrefs();
+                    AppendLog("[prefs] saved as config: " + g_currentConfigName);
+                    memset(configName, 0, sizeof(configName)); // Clear input after save
+                }
+            }
+            
+            ImGui::Spacing();
+            
+            // Load existing configurations
+            if (!g_savedConfigs.empty())
+            {
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                for (const auto& config : g_savedConfigs)
+                {
+                    ImGui::BeginGroup();
+                    ImGui::Text("[Config] %s", config.name.c_str());
+                    if (!config.vsSolutionPath.empty())
+                        ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
+                    if (!config.cursorFolderPath.empty())
+                        ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                    
+                    if (ImGui::Button(("[Load]##" + config.name).c_str()))
+                    {
+                        LoadConfig(config.name);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(("[Delete]##" + config.name).c_str()))
+                    {
+                        DeleteConfig(config.name);
+                    }
+                    ImGui::EndGroup();
+                    ImGui::Spacing();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No saved configurations");
+            }
+        }
+        
+        ImGui::Columns(1);
+        
+        // Footer with legacy controls (collapsible)
+        if (ImGui::CollapsingHeader("[Advanced Options]", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            if (ImGui::Button("[Save Current Selection]"))
+            {
+                SavePrefs();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("[Reload All Configs]"))
+            {
+                LoadPrefs();
+            }
+        }
+        
+        // Log section (collapsible)
+        if (ImGui::CollapsingHeader("[Debug Log]", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ReplaceTool::DrawSharedLog("vslog", 200.0f);
+        }
+        
         ImGui::End();
     }
 #else
