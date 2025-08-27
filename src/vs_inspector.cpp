@@ -1347,6 +1347,9 @@ namespace VSInspector
                     
                     if (ImGui::Button(("[Load]##" + config.name).c_str()))
                     {
+                        // Update last used timestamp then load
+                        for (auto &cfg : g_savedConfigs) { if (cfg.name == config.name) { cfg.lastUsedAt = (unsigned long long)time(nullptr); break; } }
+                        SavePrefs();
                         LoadConfig(config.name);
                     }
                     ImGui::SameLine();
