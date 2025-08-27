@@ -609,36 +609,57 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             }
         }
 
-        // Emoji fallback
+        // Emoji fallback: load a monochrome-capable emoji font and MERGE into atlas
         ImFont* emojiFont = nullptr;
-        const char* emojiFontPaths[] = {
-            "fonts/NotoColorEmoji.ttf",
-            "fonts/NotoEmoji-Regular.ttf",
-            "C:/Windows/Fonts/seguiemj.ttf",
-            "C:/Windows/Fonts/seguiemj.ttc",
-            "C:/Windows/Fonts/arial.ttf"
+        const char* emojiBundled[] = {
+            "fonts/NotoEmoji-Regular.ttf",      // monochrome glyphs -> works with stb
+            "fonts/NotoColorEmoji.ttf"          // color requires FreeType; may not render with stb
         };
+        const char* emojiSystem[] = {
+            "C:/Windows/Fonts/seguisym.ttf",    // Segoe UI Symbol (monochrome)
+            "C:/Windows/Fonts/seguiemj.ttf",    // Segoe UI Emoji (color; needs FreeType for color)
+            "C:/Windows/Fonts/seguiemj.ttc"
+        };
+
+        // Build emoji ranges
+        ImVector<ImWchar> emojiRanges; ImFontGlyphRangesBuilder builder; 
+        builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        // Common emoji blocks
+        static const ImWchar range_arrows[]      = { 0x2190, 0x21FF, 0 };
+        static const ImWchar range_symbols[]     = { 0x2600, 0x27FF, 0 };
+        static const ImWchar range_misc_pict[]   = { 0x1F300, 0x1F6FF, 0 };
+        static const ImWchar range_supp_pict[]   = { 0x1F900, 0x1F9FF, 0 };
+        static const ImWchar range_pict_ext_a[]  = { 0x1FA70, 0x1FAFF, 0 };
+        builder.AddRanges(range_arrows);
+        builder.AddRanges(range_symbols);
+        builder.AddRanges(range_misc_pict);
+        builder.AddRanges(range_supp_pict);
+        builder.AddRanges(range_pict_ext_a);
+        builder.BuildRanges(&emojiRanges);
+
+        ImFontConfig cfg; cfg.MergeMode = true; cfg.PixelSnapH = true; cfg.GlyphMinAdvanceX = 0.0f;
+        // Try bundled first
         for (const auto& dir : fontSearchDirs)
         {
-            if (!fs::exists(dir)) continue;
-            for (int i = 0; i < 2; ++i)
+            if (emojiFont) break; if (!fs::exists(dir)) continue;
+            for (const char* rel : emojiBundled)
             {
-                fs::path p = dir / fs::path(emojiFontPaths[i]).filename();
+                fs::path p = dir / fs::path(rel).filename();
                 if (!fs::exists(p)) continue;
-                AppendLog(std::string("[font] D3D11: trying bundled emoji: ") + p.string());
-                emojiFont = io.Fonts->AddFontFromFileTTF(p.string().c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
-                if (emojiFont) { AppendLog(std::string("[font] Loaded emoji font (bundled): ") + p.string()); break; }
+                AppendLog(std::string("[font] D3D11: merge emoji bundled: ") + p.string());
+                emojiFont = io.Fonts->AddFontFromFileTTF(p.string().c_str(), 16.0f, &cfg, emojiRanges.Data);
+                if (emojiFont) { AppendLog(std::string("[font] Merged emoji font (bundled): ") + p.string()); break; }
             }
-            if (emojiFont) break;
         }
+        // Then system
         if (!emojiFont)
         {
-            for (int i = 2; i < 5; ++i)
+            for (const char* fp : emojiSystem)
             {
-                const char* fp = emojiFontPaths[i];
                 if (!fs::exists(fp)) continue;
-                emojiFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
-                if (emojiFont) { AppendLog(std::string("[font] Loaded emoji font (system): ") + fp); break; }
+                AppendLog(std::string("[font] D3D11: merge emoji system: ") + fp);
+                emojiFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, &cfg, emojiRanges.Data);
+                if (emojiFont) { AppendLog(std::string("[font] Merged emoji font (system): ") + fp); break; }
             }
         }
 

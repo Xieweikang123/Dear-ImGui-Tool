@@ -989,10 +989,10 @@ namespace VSInspector
         
         // 设置窗口为可调整大小，并设置最小尺寸
         ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
-        ImGui::Begin(" VS & Cursor Manager", nullptr, ImGuiWindowFlags_None);
+        ImGui::Begin(" VS & Cursor Manager 🚀", nullptr, ImGuiWindowFlags_None);
         
         // Header with refresh controls
-        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor Manager");
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor Manager 😊");
         ImGui::SameLine();
         if (ImGui::Button("[Refresh]"))
         {
