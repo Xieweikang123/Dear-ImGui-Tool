@@ -400,8 +400,12 @@ namespace VSInspector
         
         // 优先查找 openedWindows 中的文件夹路径
         size_t openedWindowsPos = content.find("\"openedWindows\"");
+
+        //log
+        AppendLog(std::string("[cursor] openedWindowsPos: ") + std::to_string(openedWindowsPos));
         if (openedWindowsPos != std::string::npos)
         {
+            AppendLog("[cursor] trying openedWindows...");
             // 查找 openedWindows 数组中的每个对象
             size_t pos = openedWindowsPos;
             std::vector<std::string> openedFolders;
@@ -447,7 +451,35 @@ namespace VSInspector
             }
         }
         
-        // 如果 openedWindows 中没有找到，回退到原来的方法
+        // 如果 openedWindows 中没有找到，尝试从 lastActiveWindow 中查找
+        size_t lastActiveWindowPos = content.find("\"lastActiveWindow\"");
+        //log lastActiveWindowPos
+        AppendLog(std::string("[cursor] lastActiveWindowPos: ") + std::to_string(lastActiveWindowPos));
+        if (lastActiveWindowPos != std::string::npos)
+        {
+            AppendLog("[cursor] trying lastActiveWindow...");
+            // 查找 lastActiveWindow 中的 folder 字段
+            size_t folderPos = content.find("\"folder\"", lastActiveWindowPos);
+            if (folderPos != std::string::npos)
+            {
+                // 找到 folder 值
+                size_t q1 = content.find('"', folderPos + 8); if (q1 == std::string::npos) goto fallback;
+                size_t q2 = content.find('"', q1 + 1); if (q2 == std::string::npos) goto fallback;
+                size_t v1 = content.find('"', q2 + 1); if (v1 == std::string::npos) goto fallback;
+                std::string folderUri = content.substr(q2 + 1, v1 - (q2 + 1));
+                
+                // 解码文件夹路径
+                std::string winPath;
+                if (DecodeFileUriToWindowsPath(folderUri, winPath))
+                {
+                    folderOut = winPath;
+                    AppendLog(std::string("[cursor] lastActiveWindow found folder: ") + folderOut);
+                    return;
+                }
+            }
+        }
+        
+        // 如果 lastActiveWindow 中也没有找到，回退到原来的方法
         // 粗略提取: 查找 "folderUri":"file:///..." 与紧邻的 "label":"..."
         size_t pos = 0; size_t hitCount = 0;
         while (true)
@@ -483,6 +515,7 @@ namespace VSInspector
         }
         else
         {
+            fallback:
             AppendLog(std::string("[cursor] recent map miss for ") + workspaceName + std::string(" at ") + p.string());
             std::string winPath;
             if (ExtractLastFileUriWindowsPath(content, winPath))
