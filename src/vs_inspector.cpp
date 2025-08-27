@@ -198,6 +198,10 @@ namespace VSInspector
             {
                 g_selectedSlnPath = config.vsSolutionPath;
                 g_selectedCursorFolder = config.cursorFolderPath;
+                // Keep the multi-select set in sync with single selection
+                g_selectedCursorFolders.clear();
+                if (!g_selectedCursorFolder.empty())
+                    g_selectedCursorFolders.insert(g_selectedCursorFolder);
                 g_currentConfigName = configName;
                 AppendLog("[prefs] loaded config: " + configName);
                 if (!g_selectedSlnPath.empty())
@@ -1192,6 +1196,14 @@ namespace VSInspector
                 {
                     LaunchCursorWithFolder(folder);
                 }
+            }
+        }
+        else if (!g_selectedCursorFolder.empty())
+        {
+            // Backward-compatible single selection loaded from config: show a launch button
+            if (ImGui::Button("[Launch Cursor]"))
+            {
+                LaunchCursorWithFolder(g_selectedCursorFolder);
             }
         }
         if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
