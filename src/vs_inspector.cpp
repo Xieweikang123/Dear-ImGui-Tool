@@ -66,6 +66,15 @@ namespace VSInspector
     static std::string g_currentConfigName;
     static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
+    // Edit-config UI state
+    static bool g_showEditConfigPopup = false;
+    static SavedConfig g_editingDraft;
+    static std::string g_editingOriginalName;
+    static char g_editNameBuf[256] = {0};
+    static char g_editVsBuf[1024] = {0};
+    static char g_editCursorBuf[1024] = {0};
+    static std::string g_editErrorMsg;
+
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
     
@@ -233,6 +242,20 @@ namespace VSInspector
             }
         }
         AppendLog("[prefs] config not found for deletion: " + configName);
+    }
+
+    static void BeginEditConfig(const SavedConfig& cfg)
+    {
+        g_editingDraft = cfg;
+        g_editingOriginalName = cfg.name;
+        memset(g_editNameBuf, 0, sizeof(g_editNameBuf));
+        memset(g_editVsBuf, 0, sizeof(g_editVsBuf));
+        memset(g_editCursorBuf, 0, sizeof(g_editCursorBuf));
+        strncpy(g_editNameBuf, cfg.name.c_str(), sizeof(g_editNameBuf) - 1);
+        strncpy(g_editVsBuf, cfg.vsSolutionPath.c_str(), sizeof(g_editVsBuf) - 1);
+        strncpy(g_editCursorBuf, cfg.cursorFolderPath.c_str(), sizeof(g_editCursorBuf) - 1);
+        g_editErrorMsg.clear();
+        g_showEditConfigPopup = true;
     }
 
     static void EnsurePrefsLoaded()
@@ -1264,6 +1287,12 @@ namespace VSInspector
                         LoadConfig(config.name);
                     }
                     ImGui::SameLine();
+                    if (ImGui::Button(("[Edit]##" + config.name).c_str()))
+                    {
+                        BeginEditConfig(config);
+                        ImGui::OpenPopup("Edit Configuration");
+                    }
+                    ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
                         // 显示确认对话框
@@ -1353,6 +1382,12 @@ namespace VSInspector
                         LoadConfig(config.name);
                     }
                     ImGui::SameLine();
+                    if (ImGui::Button(("[Edit]##" + config.name).c_str()))
+                    {
+                        BeginEditConfig(config);
+                        ImGui::OpenPopup("Edit Configuration");
+                    }
+                    ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
                         // 显示确认对话框
@@ -1391,6 +1426,73 @@ namespace VSInspector
             }
         }
         
+        // Shared Edit Configuration modal
+        if (ImGui::BeginPopupModal("Edit Configuration", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("Edit configuration");
+            ImGui::Separator();
+            ImGui::InputText("Name", g_editNameBuf, sizeof(g_editNameBuf));
+            ImGui::InputText("VS Solution Path", g_editVsBuf, sizeof(g_editVsBuf));
+            ImGui::InputText("Cursor Folder Path", g_editCursorBuf, sizeof(g_editCursorBuf));
+            if (!g_editErrorMsg.empty())
+            {
+                ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.0f), "%s", g_editErrorMsg.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Save", ImVec2(120, 0)))
+            {
+                std::string newName = g_editNameBuf;
+                std::string newVs = g_editVsBuf;
+                std::string newCursor = g_editCursorBuf;
+                if (newName.empty())
+                {
+                    g_editErrorMsg = "Name cannot be empty";
+                }
+                else
+                {
+                    bool nameConflict = false;
+                    for (const auto& c : g_savedConfigs)
+                    {
+                        if (c.name == newName && newName != g_editingOriginalName) { nameConflict = true; break; }
+                    }
+                    if (nameConflict)
+                    {
+                        g_editErrorMsg = "Duplicate name";
+                    }
+                    else
+                    {
+                        // Apply changes
+                        for (auto &c : g_savedConfigs)
+                        {
+                            if (c.name == g_editingOriginalName)
+                            {
+                                c.name = newName;
+                                c.vsSolutionPath = newVs;
+                                c.cursorFolderPath = newCursor;
+                                c.lastUsedAt = (unsigned long long)time(nullptr);
+                                break;
+                            }
+                        }
+                        // Update current selection name if needed
+                        if (g_currentConfigName == g_editingOriginalName)
+                            g_currentConfigName = newName;
+                        SavePrefs();
+                        ImGui::CloseCurrentPopup();
+                        g_showEditConfigPopup = false;
+                        g_editErrorMsg.clear();
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0)))
+            {
+                ImGui::CloseCurrentPopup();
+                g_showEditConfigPopup = false;
+                g_editErrorMsg.clear();
+            }
+            ImGui::EndPopup();
+        }
+
         ImGui::Columns(1);
         
         // Footer with legacy controls (collapsible)
