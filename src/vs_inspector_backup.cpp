@@ -377,97 +377,86 @@ namespace VSInspector
         if (!ifs) return;
         std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
         
-        // 优先查找 openedWindows 中的文件夹路径
-        size_t openedWindowsPos = content.find("\"openedWindows\"");
-        if (openedWindowsPos != std::string::npos)
-        {
-            // 查找 openedWindows 数组中的每个对象
-            size_t pos = openedWindowsPos;
-            std::vector<std::string> openedFolders;
-            
-            while (true)
-            {
-                size_t folderPos = content.find("\"folder\"", pos);
-                if (folderPos == std::string::npos) break;
-                
-                // 找到 folder 值
-                size_t q1 = content.find('"', folderPos + 8); if (q1 == std::string::npos) break;
-                size_t q2 = content.find('"', q1 + 1); if (q2 == std::string::npos) break;
-                size_t v1 = content.find('"', q2 + 1); if (v1 == std::string::npos) break;
-                std::string folderUri = content.substr(q2 + 1, v1 - (q2 + 1));
-                
-                // 解码文件夹路径
-                std::string winPath;
-                if (DecodeFileUriToWindowsPath(folderUri, winPath))
-                {
-                    openedFolders.push_back(winPath);
-                    AppendLog(std::string("[cursor] found opened folder: ") + winPath);
-                    
-                    // 检查这个路径是否与工作区名称匹配
-                    fs::path folderPath = winPath;
-                    std::string folderName = folderPath.filename().string();
-                    
-                    if (_stricmp(folderName.c_str(), workspaceName.c_str()) == 0)
-                    {
-                        folderOut = winPath;
-                        AppendLog(std::string("[cursor] openedWindows match: ") + workspaceName + std::string(" -> ") + folderOut);
-                        return;
-                    }
-                }
-                pos = v1 + 1;
-            }
-            
-            // 如果没有找到精确匹配，但有openedFolders，返回第一个作为后备
-            if (!openedFolders.empty() && folderOut.empty())
-            {
-                folderOut = openedFolders[0];
-                AppendLog(std::string("[cursor] using first opened folder as fallback: ") + folderOut);
-                return;
-            }
+        // 新的 storage.json 格式: profileAssociations.workspaces
+        // 查找 "workspaces": { ... } 部分
+        size_t workspacesStart = content.find("\"workspaces\"");
+        if (workspacesStart == std::string::npos) {
+            AppendLog("[cursor] no workspaces section found in storage.json");
+            return;
         }
         
-        // 如果 openedWindows 中没有找到，回退到原来的方法
-        // 粗略提取: 查找 "folderUri":"file:///..." 与紧邻的 "label":"..."
-        size_t pos = 0; size_t hitCount = 0;
-        while (true)
-        {
-            size_t fpos = content.find("\"folderUri\"", pos);
-            if (fpos == std::string::npos) break;
-            size_t q1 = content.find('"', fpos + 12); if (q1 == std::string::npos) break; // after key
-            size_t q2 = content.find('"', q1 + 1); if (q2 == std::string::npos) break; // value start quote
-            // value
-            size_t v1 = content.find('"', q2 + 1); if (v1 == std::string::npos) break;
-            std::string folderUri = content.substr(q2 + 1, v1 - (q2 + 1));
-            // find label within small window
-            size_t lpos = content.find("\"label\"", v1);
-            if (lpos == std::string::npos) { pos = v1 + 1; continue; }
-            size_t lq1 = content.find('"', lpos + 7); if (lq1 == std::string::npos) { pos = lpos + 1; continue; }
-            size_t lq2 = content.find('"', lq1 + 1); if (lq2 == std::string::npos) { pos = lq1 + 1; continue; }
-            std::string label = content.substr(lq1 + 1, lq2 - (lq1 + 1));
-            // 比较工作区名
-            if (_stricmp(label.c_str(), workspaceName.c_str()) == 0)
-            {
-                std::string winPath;
-                if (DecodeFileUriToWindowsPath(folderUri, winPath))
-                {
-                    folderOut = winPath; hitCount++;
+        // 找到 workspaces 对象的开始和结束
+        size_t braceStart = content.find('{', workspacesStart);
+        if (braceStart == std::string::npos) return;
+        
+        int braceCount = 0;
+        size_t braceEnd = braceStart;
+        for (size_t i = braceStart; i < content.size(); ++i) {
+            if (content[i] == '{') braceCount++;
+            else if (content[i] == '}') {
+                braceCount--;
+                if (braceCount == 0) {
+                    braceEnd = i;
                     break;
                 }
             }
-            pos = lq2 + 1;
         }
-        if (!folderOut.empty())
-        {
-            AppendLog(std::string("[cursor] recent map: ") + workspaceName + std::string(" -> ") + folderOut);
+        
+        if (braceCount != 0) {
+            AppendLog("[cursor] malformed workspaces object in storage.json");
+            return;
         }
-        else
-        {
-            AppendLog(std::string("[cursor] recent map miss for ") + workspaceName + std::string(" at ") + p.string());
+        
+        std::string workspacesContent = content.substr(braceStart + 1, braceEnd - braceStart - 1);
+        AppendLog("[cursor] parsing workspaces content, length: " + std::to_string(workspacesContent.length()));
+        
+        // 解析每个 workspace 条目
+        size_t pos = 0;
+        while (pos < workspacesContent.length()) {
+            // 查找下一个 file:/// URI
+            size_t uriStart = workspacesContent.find("file:///", pos);
+            if (uriStart == std::string::npos) break;
+            
+            // 找到 URI 的结束引号
+            size_t uriEnd = workspacesContent.find('"', uriStart);
+            if (uriEnd == std::string::npos) break;
+            
+            std::string folderUri = workspacesContent.substr(uriStart, uriEnd - uriStart);
+            
+            // 从 URI 中提取文件夹名称
             std::string winPath;
-            if (ExtractLastFileUriWindowsPath(content, winPath))
-            {
-                folderOut = winPath;
-                AppendLog(std::string("[cursor] fallback last workspace -> ") + folderOut);
+            if (DecodeFileUriToWindowsPath(folderUri, winPath)) {
+                // 提取文件夹名称（最后一部分）
+                size_t lastSlash = winPath.find_last_of("\\/");
+                std::string folderName = (lastSlash != std::string::npos) ? 
+                    winPath.substr(lastSlash + 1) : winPath;
+                
+                AppendLog("[cursor] checking folder: " + folderName + " vs workspace: " + workspaceName);
+                
+                // 比较文件夹名称和工作区名称
+                if (_stricmp(folderName.c_str(), workspaceName.c_str()) == 0) {
+                    folderOut = winPath;
+                    AppendLog("[cursor] found match: " + workspaceName + " -> " + winPath);
+                    break;
+                }
+            }
+            
+            pos = uriEnd + 1;
+        }
+        
+        if (folderOut.empty()) {
+            AppendLog("[cursor] no match found for workspace: " + workspaceName);
+            // 作为后备，返回最后一个工作区
+            std::string lastUri;
+            size_t lastUriPos = workspacesContent.rfind("file:///");
+            if (lastUriPos != std::string::npos) {
+                size_t lastUriEnd = workspacesContent.find('"', lastUriPos);
+                if (lastUriEnd != std::string::npos) {
+                    lastUri = workspacesContent.substr(lastUriPos, lastUriEnd - lastUriPos);
+                    if (DecodeFileUriToWindowsPath(lastUri, folderOut)) {
+                        AppendLog("[cursor] fallback to last workspace: " + folderOut);
+                    }
+                }
             }
         }
     }
@@ -814,129 +803,134 @@ namespace VSInspector
             AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)inst.pid) + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle));
         }
 
-        // 首先获取所有openedWindows中的文件夹
-        std::vector<std::string> openedFolders;
-        std::string appdata = GetEnvU8("APPDATA");
-        AppendLog(std::string("[cursor] APPDATA=") + appdata);
-        if (!appdata.empty())
+        for (auto& cinst : foundCursor)
         {
-            fs::path p = fs::path(appdata) / "Cursor" / "User" / "globalStorage" / "storage.json";
-            AppendLog(std::string("[cursor] checking storage.json at: ") + p.string());
-            std::error_code ec; 
-            if (fs::exists(p, ec))
-            {
-                AppendLog("[cursor] storage.json exists, reading content...");
-                std::ifstream ifs(p.string(), std::ios::binary);
-                if (ifs)
-                {
-                    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-                    AppendLog(std::string("[cursor] storage.json content size: ") + std::to_string(content.size()));
-                    size_t openedWindowsPos = content.find("\"openedWindows\"");
-                    if (openedWindowsPos != std::string::npos)
-                    {
-                        AppendLog(std::string("[cursor] found openedWindows at position: ") + std::to_string(openedWindowsPos));
-                        size_t pos = openedWindowsPos;
-                        int folderCount = 0;
-                        while (true)
-                        {
-                            size_t folderPos = content.find("\"folder\"", pos);
-                            if (folderPos == std::string::npos) 
-                            {
-                                AppendLog(std::string("[cursor] no more folder entries found, total found: ") + std::to_string(folderCount));
-                                break;
-                            }
-                            
-                            folderCount++;
-                            AppendLog(std::string("[cursor] found folder entry #") + std::to_string(folderCount) + std::string(" at position: ") + std::to_string(folderPos));
-                            
-                            // 改进的JSON解析逻辑
-                            // 查找 "folder": 后面的值
-                            size_t colonPos = content.find(':', folderPos + 8);
-                            if (colonPos == std::string::npos) break;
-                            
-                            // 跳过冒号后的空白字符
-                            size_t valueStart = colonPos + 1;
-                            while (valueStart < content.size() && (content[valueStart] == ' ' || content[valueStart] == '\t' || content[valueStart] == '\n' || content[valueStart] == '\r'))
-                                valueStart++;
-                            
-                            if (valueStart >= content.size()) break;
-                            
-                            // 检查是否是字符串值（以双引号开始）
-                            if (content[valueStart] != '"') break;
-                            
-                            // 找到字符串的结束位置
-                            size_t valueEnd = valueStart + 1;
-                            while (valueEnd < content.size() && content[valueEnd] != '"')
-                            {
-                                if (content[valueEnd] == '\\' && valueEnd + 1 < content.size())
-                                    valueEnd += 2; // 跳过转义字符
-                                else
-                                    valueEnd++;
-                            }
-                            
-                            if (valueEnd >= content.size()) break;
-                            
-                            std::string folderUri = content.substr(valueStart + 1, valueEnd - valueStart - 1);
-                            AppendLog(std::string("[cursor] folder URI: ") + folderUri);
-                            
-                            std::string winPath;
-                            if (DecodeFileUriToWindowsPath(folderUri, winPath))
-                            {
-                                openedFolders.push_back(winPath);
-                                AppendLog(std::string("[cursor] decoded opened folder: ") + winPath);
-                            }
-                            else
-                            {
-                                AppendLog(std::string("[cursor] failed to decode folder URI: ") + folderUri);
-                            }
-                            pos = valueEnd + 1;
-                        }
-                    }
-                    else
-                    {
-                        AppendLog("[cursor] openedWindows not found in storage.json");
-                    }
-                }
-                else
-                {
-                    AppendLog("[cursor] failed to open storage.json for reading");
-                }
-            }
-            else
-            {
-                AppendLog(std::string("[cursor] storage.json does not exist, error code: ") + std::to_string(ec.value()));
-            }
-        }
-        else
-        {
-            AppendLog("[cursor] APPDATA environment variable is empty");
-        }
-        AppendLog(std::string("[cursor] total openedFolders found: ") + std::to_string(openedFolders.size()));
-        AppendLog(std::string("[cursor] total cursor processes found: ") + std::to_string(foundCursor.size()));
-
-        // 重置静态索引，确保每次刷新都从头开始分配
-        static size_t cursorIndex = 0;
-        cursorIndex = 0;  // 重置为0
-
-        // 直接为每个Cursor实例分配openedFolders中的文件夹
-        for (size_t i = 0; i < foundCursor.size(); ++i)
-        {
-            auto& cinst = foundCursor[i];
             auto it = pidToTitle.find(cinst.pid);
             if (it != pidToTitle.end()) cinst.windowTitle = it->second;
             AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" title=") + (cinst.windowTitle.empty()?"<none>":cinst.windowTitle));
-            
-            // 直接分配openedFolders中的文件夹，按索引顺序
-            if (i < openedFolders.size())
+            if (cinst.windowTitle.empty())
             {
-                cinst.folderPath = openedFolders[i];
-                fs::path folderPath = cinst.folderPath;
-                cinst.workspaceName = folderPath.filename().string();
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" directly assigned opened folder ") + cinst.folderPath + std::string(" (index ") + std::to_string(i) + std::string(")"));
+                // No title to parse; skip heuristics for this instance
+                continue;
+            }
+            
+            // Enhanced heuristic: title format analysis
+            // Examples: 
+            // "FireDeviceController.cs - gwaf - Cursor"
+            // "vs_inspector.cpp (Working Tree) (vs_inspector.cpp) - Dear-ImGui-Tool - Cursor"
+            // "project - Cursor", "D:\path - Cursor"
+            std::string title = cinst.windowTitle;
+            
+            // Handle admin suffix
+            if (title.size() > 17 && title.rfind(" - Cursor (Admin)") == title.size() - 17) {
+                title = title.substr(0, title.size() - 17);
+            }
+            else if (title.size() > 9 && title.rfind(" - Cursor") == title.size() - 9) {
+                title = title.substr(0, title.size() - 9);
+            }
+            
+            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" normalizedTitle=") + title);
+            
+            // Trim spaces
+            while (!title.empty() && (title.back()==' '||title.back()=='\t')) title.pop_back();
+            while (!title.empty() && (title.front()==' '||title.front()=='\t')) title.erase(title.begin());
+            
+            if (title.empty()) {
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" empty title after trim"));
+                continue;
+            }
+            
+            // Strategy 1: Check if the entire title is a valid directory path
+            std::error_code ecx;
+            if (title.find(':') != std::string::npos && fs::is_directory(title, ecx))
+            {
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" found direct path: ") + title);
+                cinst.folderPath = title;
             }
             else
             {
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" no opened folder available (index ") + std::to_string(i) + std::string(" >= ") + std::to_string(openedFolders.size()) + std::string(")"));
+                // Strategy 2: Split by " - " and analyze parts
+                std::vector<std::string> parts;
+                size_t start = 0;
+                while (true) {
+                    size_t p = title.find(" - ", start);
+                    if (p == std::string::npos) { 
+                        parts.push_back(title.substr(start)); 
+                        break; 
+                    }
+                    parts.push_back(title.substr(start, p - start));
+                    start = p + 3;
+                }
+                
+                // Clean up parts: remove parentheses and extra spaces
+                for (auto& part : parts) {
+                    // Remove content in parentheses like "(Working Tree)" or "(vs_inspector.cpp)"
+                    size_t parenStart = part.find('(');
+                    while (parenStart != std::string::npos) {
+                        size_t parenEnd = part.find(')', parenStart);
+                        if (parenEnd != std::string::npos) {
+                            part.erase(parenStart, parenEnd - parenStart + 1);
+                        } else {
+                            break;
+                        }
+                        parenStart = part.find('(', parenStart);
+                    }
+                    
+                    // Trim spaces
+                    while (!part.empty() && (part.back()==' '||part.back()=='\t')) part.pop_back();
+                    while (!part.empty() && (part.front()==' '||part.front()=='\t')) part.erase(part.begin());
+                }
+                
+                if (!parts.empty())
+                {
+                    std::string partsLog;
+                    for (size_t i = 0; i < parts.size(); ++i) { 
+                        if (i) partsLog += " | "; 
+                        partsLog += parts[i]; 
+                    }
+                    AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" parts=") + partsLog);
+                    
+                    // Strategy 2a: Check if any part is a valid directory path
+                    for (const auto& part : parts)
+                    {
+                        if (part.find(':') != std::string::npos && fs::is_directory(part, ecx))
+                        {
+                            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" found path in part: ") + part);
+                            cinst.folderPath = part;
+                            break;
+                        }
+                    }
+                    
+                    // Strategy 2b: If no path found, use the last part as workspace name
+                    if (cinst.folderPath.empty())
+                    {
+                        cinst.workspaceName = parts.back();
+                        // trim workspace name
+                        while (!cinst.workspaceName.empty() && (cinst.workspaceName.back()==' '||cinst.workspaceName.back()=='\t')) 
+                            cinst.workspaceName.pop_back();
+                        while (!cinst.workspaceName.empty() && (cinst.workspaceName.front()==' '||cinst.workspaceName.front()=='\t')) 
+                            cinst.workspaceName.erase(cinst.workspaceName.begin());
+                        
+                        AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" workspaceName= ") + cinst.workspaceName);
+                        
+                        // Try to map workspace name to folder path from Cursor's recent records
+                        if (!cinst.workspaceName.empty())
+                        {
+                            std::string mapped;
+                            TryMapCursorWorkspaceFromRecent(cinst.workspaceName, mapped);
+                            if (!mapped.empty())
+                            {
+                                cinst.folderPath = mapped;
+                                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" mapped workspace to: ") + mapped);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (cinst.folderPath.empty())
+            {
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" cannot parse folder from title: ") + title);
             }
         }
 
