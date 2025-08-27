@@ -44,8 +44,8 @@ echo.
 echo Build successful!
 echo Executable location: build\Release\DearImGuiExample.exe
 echo.
-echo Press any key to run the program...
-pause
+echo GOGOGO
+@REM pause
 
 REM Run the program
 if exist Release\DearImGuiExample.exe (

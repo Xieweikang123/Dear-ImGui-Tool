@@ -829,6 +829,63 @@ namespace VSInspector
         AppendLog(std::string("[cursor] total openedFolders found: ") + std::to_string(openedFolders.size()));
         AppendLog(std::string("[cursor] total cursor processes found: ") + std::to_string(foundCursor.size()));
 
+        // 如果没有从 openedWindows 解析到任何文件夹，则尝试从 lastActiveWindow 读取一个文件夹作为回退
+        if (openedFolders.empty())
+        {
+            AppendLog("[cursor] openedFolders empty, trying lastActiveWindow as fallback...");
+            std::string appdata2 = GetEnvU8("APPDATA");
+            if (!appdata2.empty())
+            {
+                fs::path p2 = fs::path(appdata2) / "Cursor" / "User" / "globalStorage" / "storage.json";
+                std::error_code ec2;
+                if (fs::exists(p2, ec2))
+                {
+                    std::ifstream ifs2(p2.string(), std::ios::binary);
+                    if (ifs2)
+                    {
+                        std::string content2((std::istreambuf_iterator<char>(ifs2)), std::istreambuf_iterator<char>());
+                        size_t lastActiveWindowPos = content2.find("\"lastActiveWindow\"");
+                        AppendLog(std::string("[cursor] lastActiveWindowPos: ") + std::to_string(lastActiveWindowPos));
+                        if (lastActiveWindowPos != std::string::npos)
+                        {
+                            size_t folderKeyPos = content2.find("\"folder\"", lastActiveWindowPos);
+                            if (folderKeyPos != std::string::npos)
+                            {
+                                size_t colonPos = content2.find(':', folderKeyPos + 8);
+                                if (colonPos != std::string::npos)
+                                {
+                                    size_t valueStart = colonPos + 1;
+                                    while (valueStart < content2.size() && (content2[valueStart] == ' ' || content2[valueStart] == '\t' || content2[valueStart] == '\n' || content2[valueStart] == '\r')) valueStart++;
+                                    if (valueStart < content2.size() && content2[valueStart] == '"')
+                                    {
+                                        size_t valueEnd = valueStart + 1;
+                                        while (valueEnd < content2.size() && content2[valueEnd] != '"')
+                                        {
+                                            if (content2[valueEnd] == '\\' && valueEnd + 1 < content2.size()) valueEnd += 2; else valueEnd++;
+                                        }
+                                        if (valueEnd < content2.size())
+                                        {
+                                            std::string folderUri = content2.substr(valueStart + 1, valueEnd - valueStart - 1);
+                                            std::string winPath2;
+                                            if (DecodeFileUriToWindowsPath(folderUri, winPath2))
+                                            {
+                                                openedFolders.push_back(winPath2);
+                                                AppendLog(std::string("[cursor] fallback lastActiveWindow folder: ") + winPath2);
+                                            }
+                                            else
+                                            {
+                                                AppendLog(std::string("[cursor] failed to decode lastActiveWindow folder URI: ") + folderUri);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 重置静态索引，确保每次刷新都从头开始分配
         static size_t cursorIndex = 0;
         cursorIndex = 0;  // 重置为0
