@@ -710,14 +710,16 @@ namespace VSInspector
             DWORD pid = 0;
             GetWindowThreadProcessId(hWnd, &pid);
             if (pid == 0) return TRUE;
-            char title[512];
-            int len = GetWindowTextA(hWnd, title, (int)sizeof(title));
-            if (len > 0)
+            wchar_t wtitle[512];
+            int lenW = GetWindowTextW(hWnd, wtitle, (int)(sizeof(wtitle)/sizeof(wtitle[0])));
+            if (lenW > 0)
             {
+                std::wstring wstr(wtitle, lenW);
+                std::string utf8 = WideToUtf8(wstr);
                 auto* mapPtr = reinterpret_cast<std::unordered_map<DWORD, std::string>*>(lParam);
                 auto it = mapPtr->find(pid);
-                if (it == mapPtr->end() || (int)it->second.size() < len)
-                    (*mapPtr)[pid] = std::string(title, len);
+                if (it == mapPtr->end() || (int)it->second.size() < (int)utf8.size())
+                    (*mapPtr)[pid] = utf8;
             }
             return TRUE;
         }, reinterpret_cast<LPARAM>(&pidToTitle));
@@ -987,7 +989,7 @@ namespace VSInspector
         
         // 设置窗口为可调整大小，并设置最小尺寸
         ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
-        ImGui::Begin("VS & Cursor Manager", nullptr, ImGuiWindowFlags_None);
+        ImGui::Begin(" VS & Cursor Manager", nullptr, ImGuiWindowFlags_None);
         
         // Header with refresh controls
         ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor Manager");
@@ -1065,28 +1067,46 @@ namespace VSInspector
         
         ImGui::Spacing();
         
-        // Cursor Instances
+        // Cursor Instances (beautified table)
         if (!localCursor.empty())
         {
             ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Cursor (%d)", (int)localCursor.size());
-            for (const auto& c : localCursor)
+            ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoHostExtendX;
+            if (ImGui::BeginTable("cursor_table", 4, flags))
             {
-                if (c.folderPath.empty()) continue;
-                ImGui::BeginGroup();
-                ImGui::Text("[PID] %lu", (unsigned long)c.pid);
-                if (!c.windowTitle.empty())
+                ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+                ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch, 2.5f);
+                ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+                ImGui::TableHeadersRow();
+
+                for (const auto& c : localCursor)
                 {
-                    ImGui::TextWrapped("[Title] %s", c.windowTitle.c_str());
+                    if (c.folderPath.empty()) continue;
+                    ImGui::TableNextRow();
+
+                    // PID
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%lu", (unsigned long)c.pid);
+
+                    // Title
+                    ImGui::TableSetColumnIndex(1);
+                    if (!c.windowTitle.empty()) ImGui::TextWrapped("%s", c.windowTitle.c_str()); else ImGui::TextDisabled("<none>");
+
+                    // Path
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextWrapped("%s", c.folderPath.c_str());
+
+                    // Action
+                    ImGui::TableSetColumnIndex(3);
+                    bool isSelected = (g_selectedCursorFolder == c.folderPath);
+                    if (ImGui::SmallButton((std::string(isSelected ? "[Selected] " : "[Use] ") + "##" + std::to_string((unsigned long)c.pid)).c_str()))
+                    {
+                        g_selectedCursorFolder = c.folderPath;
+                    }
                 }
-                ImGui::TextWrapped("[Path] %s", c.folderPath.c_str());
-                bool checked = (g_selectedCursorFolder == c.folderPath);
-                std::string chkId = std::string("[Use this folder]##") + std::to_string((unsigned long)c.pid);
-                if (ImGui::Checkbox(chkId.c_str(), &checked))
-                {
-                    g_selectedCursorFolder = checked ? c.folderPath : std::string();
-                }
-                ImGui::EndGroup();
-                ImGui::Spacing();
+
+                ImGui::EndTable();
             }
         }
         else

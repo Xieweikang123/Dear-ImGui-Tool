@@ -526,6 +526,140 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
+    // Font loading and verbose logging (D3D11 path)
+    {
+        AppendLog("[font] D3D11: starting font setup");
+        ImGuiIO& io = ImGui::GetIO();
+        ImFont* defaultFont = io.Fonts->AddFontDefault();
+        if (defaultFont) AppendLog("[font] D3D11: added default font");
+
+        ImFont* chineseFont = nullptr;
+        const char* localCandidates[] = {
+            "fonts/NotoSansSC-Regular.otf",
+            "fonts/NotoSansSC-Regular.ttf",
+            "fonts/SourceHanSansCN-Regular.otf",
+            "fonts/SourceHanSansCN-Regular.ttf",
+            "fonts/MSYH.TTC",
+            "fonts/msyh.ttc",
+            "fonts/SIMSUN.TTC",
+            "fonts/simsun.ttc"
+        };
+
+        // Build search dirs: CWD fonts/Fonts and EXE_DIR fonts/Fonts
+        std::vector<fs::path> fontSearchDirs;
+        fontSearchDirs.push_back(fs::path("fonts"));
+        fontSearchDirs.push_back(fs::path("Fonts"));
+        wchar_t exePathW[MAX_PATH] = {0};
+        if (GetModuleFileNameW(NULL, exePathW, MAX_PATH) > 0)
+        {
+            fs::path exeDir = fs::path(exePathW).parent_path();
+            fontSearchDirs.push_back(exeDir / "fonts");
+            fontSearchDirs.push_back(exeDir / "Fonts");
+            AppendLog(std::string("[font] D3D11: exeDir= ") + exeDir.string());
+        }
+        AppendLog(std::string("[font] D3D11: current_path= ") + fs::current_path().string());
+
+        for (const auto& dir : fontSearchDirs)
+        {
+            AppendLog(std::string("[font] D3D11: check dir: ") + dir.string() + (fs::exists(dir) ? " [exists]" : " [missing]"));
+            if (!fs::exists(dir)) continue;
+            for (const char* rel : localCandidates)
+            {
+                fs::path candidate = dir / fs::path(rel).filename();
+                if (!fs::exists(candidate)) continue;
+                std::string p = candidate.string();
+                AppendLog(std::string("[font] D3D11: trying bundled font: ") + p);
+                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (bundled): ") + p); break; }
+                else { AppendLog(std::string("[font] failed to load: ") + p); }
+            }
+            if (chineseFont) break;
+            // Scan directory for any ttf/otf/ttc
+            for (auto& entry : fs::directory_iterator(dir))
+            {
+                if (!entry.is_regular_file()) continue;
+                auto ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".ttf" || ext == ".otf" || ext == ".ttc")
+                {
+                    std::string p = entry.path().string();
+                    AppendLog(std::string("[font] D3D11: scanning try: ") + p);
+                    chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                    if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (scanned): ") + p); break; }
+                }
+            }
+            if (chineseFont) break;
+        }
+
+        // System fallback
+        if (!chineseFont)
+        {
+            const char* sysFonts[] = {
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/simsun.ttc",
+                "C:/Windows/Fonts/msyh.ttf",
+                "C:/Windows/Fonts/simsun.ttf"
+            };
+            for (const char* fp : sysFonts)
+            {
+                AppendLog(std::string("[font] D3D11: try system font: ") + fp);
+                if (!fs::exists(fp)) { AppendLog("[font] D3D11: not found"); continue; }
+                chineseFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (system): ") + fp); break; }
+            }
+        }
+
+        // Emoji fallback
+        ImFont* emojiFont = nullptr;
+        const char* emojiFontPaths[] = {
+            "fonts/NotoColorEmoji.ttf",
+            "fonts/NotoEmoji-Regular.ttf",
+            "C:/Windows/Fonts/seguiemj.ttf",
+            "C:/Windows/Fonts/seguiemj.ttc",
+            "C:/Windows/Fonts/arial.ttf"
+        };
+        for (const auto& dir : fontSearchDirs)
+        {
+            if (!fs::exists(dir)) continue;
+            for (int i = 0; i < 2; ++i)
+            {
+                fs::path p = dir / fs::path(emojiFontPaths[i]).filename();
+                if (!fs::exists(p)) continue;
+                AppendLog(std::string("[font] D3D11: trying bundled emoji: ") + p.string());
+                emojiFont = io.Fonts->AddFontFromFileTTF(p.string().c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
+                if (emojiFont) { AppendLog(std::string("[font] Loaded emoji font (bundled): ") + p.string()); break; }
+            }
+            if (emojiFont) break;
+        }
+        if (!emojiFont)
+        {
+            for (int i = 2; i < 5; ++i)
+            {
+                const char* fp = emojiFontPaths[i];
+                if (!fs::exists(fp)) continue;
+                emojiFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, nullptr, io.Fonts->GetGlyphRangesDefault());
+                if (emojiFont) { AppendLog(std::string("[font] Loaded emoji font (system): ") + fp); break; }
+            }
+        }
+
+        // Set default font preference
+        if (chineseFont)
+        {
+            io.FontDefault = chineseFont;
+            AppendLog("[font] D3D11: Using Chinese font as default");
+        }
+        else if (emojiFont)
+        {
+            io.FontDefault = emojiFont;
+            AppendLog("[font] D3D11: Using emoji font as default");
+        }
+        else
+        {
+            io.FontDefault = defaultFont;
+            AppendLog("[font] D3D11: Using default font");
+        }
+    }
+
     // Main loop
     bool done = false;
     while (!done)
@@ -649,28 +783,94 @@ int main(int, char**)
     // 改进的字体加载策略
     ImFont* defaultFont = io.Fonts->AddFontDefault();
     
-    // 尝试加载支持中文和emoji的字体
+    // 尝试加载支持中文和emoji的字体（优先从本地 fonts/ 目录加载，便于自带字体）
     ImFont* chineseFont = nullptr;
-    const char* chineseFontPaths[] = {
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simsun.ttc",
-        "C:/Windows/Fonts/msyh.ttf",
-        "C:/Windows/Fonts/simsun.ttf"
-    };
-    
-    for (const char* fontPath : chineseFontPaths)
     {
-        chineseFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-        if (chineseFont) 
+        // 首选预置候选（若随程序打包）
+        const char* localCandidates[] = {
+            "fonts/NotoSansSC-Regular.otf",
+            "fonts/NotoSansSC-Regular.ttf",
+            "fonts/SourceHanSansCN-Regular.otf",
+            "fonts/SourceHanSansCN-Regular.ttf",
+            "fonts/MSYH.TTC",
+            "fonts/msyh.ttc",
+            "fonts/SIMSUN.TTC",
+            "fonts/simsun.ttc"
+        };
+        // 构建搜索目录：当前工作目录下 fonts/ 与 Fonts/，以及可执行目录下的 fonts/ 与 Fonts/
+        std::vector<fs::path> fontSearchDirs;
+        fontSearchDirs.push_back(fs::path("fonts"));
+        fontSearchDirs.push_back(fs::path("Fonts"));
+#ifdef _WIN32
         {
-            AppendLog(std::string("[font] Loaded Chinese font: ") + fontPath);
-            break;
+            wchar_t exePathW[MAX_PATH] = {0};
+            if (GetModuleFileNameW(NULL, exePathW, MAX_PATH) > 0)
+            {
+                fs::path exeDir = fs::path(exePathW).parent_path();
+                fontSearchDirs.push_back(exeDir / "fonts");
+                fontSearchDirs.push_back(exeDir / "Fonts");
+            }
+        }
+#endif
+        for (const auto& dir : fontSearchDirs)
+        {
+            if (!fs::exists(dir)) continue;
+            AppendLog(std::string("[font] Searching bundled fonts under: ") + dir.string());
+            for (const char* rel : localCandidates)
+            {
+                fs::path candidate = dir / fs::path(rel).filename();
+                if (!fs::exists(candidate)) continue;
+                std::string p = candidate.string();
+                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (bundled): ") + p); break; }
+            }
+            if (chineseFont) break;
+        }
+        // 若以上未命中，则扫描 fonts 目录的所有 ttf/otf
+        if (!chineseFont)
+        {
+            for (const auto& dir : fontSearchDirs)
+            {
+                if (!fs::exists(dir)) continue;
+                AppendLog(std::string("[font] scanning fonts directory: ") + dir.string());
+                for (auto& entry : fs::directory_iterator(dir))
+                {
+                    if (!entry.is_regular_file()) continue;
+                    auto ext = entry.path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                    if (ext == ".ttf" || ext == ".otf" || ext == ".ttc")
+                    {
+                        std::string p = entry.path().string();
+                        chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                        if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (scanned): ") + p); break; }
+                    }
+                }
+                if (chineseFont) break;
+            }
+        }
+        // 系统字体兜底
+        if (!chineseFont)
+        {
+            const char* chineseFontPaths[] = {
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/simsun.ttc",
+                "C:/Windows/Fonts/msyh.ttf",
+                "C:/Windows/Fonts/simsun.ttf"
+            };
+            for (const char* fontPath : chineseFontPaths)
+            {
+                if (!fs::exists(fontPath)) continue;
+                chineseFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (system): ") + fontPath); break; }
+            }
         }
     }
     
     // 尝试加载emoji字体作为补充
     ImFont* emojiFont = nullptr;
     const char* emojiFontPaths[] = {
+        "fonts/NotoColorEmoji.ttf",
+        "fonts/NotoEmoji-Regular.ttf",
         "C:/Windows/Fonts/seguiemj.ttf",
         "C:/Windows/Fonts/seguiemj.ttc",
         "C:/Windows/Fonts/arial.ttf"
