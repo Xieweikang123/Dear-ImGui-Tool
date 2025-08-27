@@ -145,7 +145,8 @@ endif()
 
 # Compiler options
 if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+    # Ensure MSVC treats sources as UTF-8 to avoid codepage mis-parsing
+    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /utf-8)
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
 endif()

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <cstring>
+#include <ctime>
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
@@ -53,6 +54,8 @@ namespace VSInspector
         std::string name;
         std::string vsSolutionPath;
         std::string cursorFolderPath;
+        unsigned long long createdAt = 0;    // unix time seconds
+        unsigned long long lastUsedAt = 0;   // unix time seconds
     };
 
     // Selections and persistence
@@ -92,6 +95,7 @@ namespace VSInspector
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
                     config.cursorFolderPath = g_selectedCursorFolder;
+                    if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
                     found = true;
                     break;
                 }
@@ -102,6 +106,7 @@ namespace VSInspector
                 newConfig.name = g_currentConfigName;
                 newConfig.vsSolutionPath = g_selectedSlnPath;
                 newConfig.cursorFolderPath = g_selectedCursorFolder;
+                newConfig.createdAt = (unsigned long long)time(nullptr);
                 g_savedConfigs.push_back(newConfig);
             }
         }
@@ -116,6 +121,8 @@ namespace VSInspector
             ofs << "config=" << config.name << "\n";
             ofs << "sln=" << config.vsSolutionPath << "\n";
             ofs << "cursor=" << config.cursorFolderPath << "\n";
+            ofs << "created=" << config.createdAt << "\n";
+            ofs << "used=" << config.lastUsedAt << "\n";
             ofs << "---\n";  // Separator between configs
         }
         
@@ -162,6 +169,14 @@ namespace VSInspector
             else if (line.rfind("cursor=", 0) == 0)
             {
                 currentConfig.cursorFolderPath = line.substr(7);
+            }
+            else if (line.rfind("created=", 0) == 0)
+            {
+                currentConfig.createdAt = strtoull(line.substr(8).c_str(), nullptr, 10);
+            }
+            else if (line.rfind("used=", 0) == 0)
+            {
+                currentConfig.lastUsedAt = strtoull(line.substr(5).c_str(), nullptr, 10);
             }
         }
         
@@ -895,24 +910,24 @@ namespace VSInspector
         cursorIndex = 0;  // 重置为0
 
         // 直接为每个Cursor实例分配openedFolders中的文件夹
-        for (size_t i = 0; i < foundCursor.size(); ++i)
+        for (size_t idx = 0; idx < foundCursor.size(); ++idx)
         {
-            auto& cinst = foundCursor[i];
+            auto& cinst = foundCursor[idx];
             auto it = pidToTitle.find(cinst.pid);
             if (it != pidToTitle.end()) cinst.windowTitle = it->second;
             AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" title=") + (cinst.windowTitle.empty()?"<none>":cinst.windowTitle));
             
             // 直接分配openedFolders中的文件夹，按索引顺序
-            if (i < openedFolders.size())
+            if (idx < openedFolders.size())
             {
-                cinst.folderPath = openedFolders[i];
+                cinst.folderPath = openedFolders[idx];
                 fs::path folderPath = cinst.folderPath;
                 cinst.workspaceName = folderPath.filename().string();
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" directly assigned opened folder ") + cinst.folderPath + std::string(" (index ") + std::to_string(i) + std::string(")"));
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" directly assigned opened folder ") + cinst.folderPath + std::string(" (index ") + std::to_string(idx) + std::string(")"));
             }
             else
             {
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" no opened folder available (index ") + std::to_string(i) + std::string(" >= ") + std::to_string(openedFolders.size()) + std::string(")"));
+                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" no opened folder available (index ") + std::to_string(idx) + std::string(" >= ") + std::to_string(openedFolders.size()) + std::string(")"));
             }
         }
 
@@ -1207,11 +1222,16 @@ namespace VSInspector
             
             ImGui::Spacing();
             
-            // Load existing configurations
+            // Load existing configurations (sorted by lastUsedAt desc, then createdAt desc)
             if (!g_savedConfigs.empty())
             {
                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
-                for (const auto& config : g_savedConfigs)
+                std::vector<SavedConfig> sorted = g_savedConfigs;
+                std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
+                    if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
+                    return a.createdAt > b.createdAt;
+                });
+                for (const auto& config : sorted)
                 {
                     ImGui::BeginGroup();
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
@@ -1226,6 +1246,9 @@ namespace VSInspector
                     
                     if (ImGui::Button(("[Load]##" + config.name).c_str()))
                     {
+                        // Update last used timestamp then load
+                        for (auto &cfg : g_savedConfigs) { if (cfg.name == config.name) { cfg.lastUsedAt = (unsigned long long)time(nullptr); break; } }
+                        SavePrefs();
                         LoadConfig(config.name);
                     }
                     ImGui::SameLine();
@@ -1288,11 +1311,16 @@ namespace VSInspector
             
             ImGui::Spacing();
             
-            // Load existing configurations
+            // Load existing configurations (sorted by lastUsedAt desc, then createdAt desc)
             if (!g_savedConfigs.empty())
             {
                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
-                for (const auto& config : g_savedConfigs)
+                std::vector<SavedConfig> sorted = g_savedConfigs;
+                std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
+                    if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
+                    return a.createdAt > b.createdAt;
+                });
+                for (const auto& config : sorted)
                 {
                     ImGui::BeginGroup();
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
