@@ -1070,7 +1070,9 @@ namespace VSInspector
         // Cursor Instances (beautified table)
         if (!localCursor.empty())
         {
-            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Cursor (%d)", (int)localCursor.size());
+            int validCursorCount = 0;
+            for (const auto& c : localCursor) { if (!c.folderPath.empty()) ++validCursorCount; }
+            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Cursor (%d)", validCursorCount);
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoHostExtendX;
             if (ImGui::BeginTable("cursor_table", 4, flags))
             {
