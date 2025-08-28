@@ -506,6 +506,62 @@ static const UINT TRAY_ICON_ID = 1;
 static const UINT ID_TRAY_SHOW = 10001;
 static const UINT ID_TRAY_EXIT = 10002;
 static NOTIFYICONDATA nid = {};
+// ---- App icon (procedural) ----
+static HICON g_appIcon = nullptr;
+static HICON CreateAppIcon()
+{
+#ifdef _WIN32
+    const int size = 32;
+    BITMAPV5HEADER bi{};
+    bi.bV5Size = sizeof(BITMAPV5HEADER);
+    bi.bV5Width = size;
+    bi.bV5Height = -size;
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask   = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask  = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+    void* bits = nullptr;
+    HDC hdc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(hdc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    if (!color) return NULL;
+    unsigned int* px = (unsigned int*)bits;
+    for (int i = 0; i < size * size; ++i) px[i] = 0x00000000;
+    auto setpx = [&](int x, int y, unsigned int argb){ if (x>=0 && x<size && y>=0 && y<size) px[y*size + x] = argb; };
+    const int r = 6;
+    for (int y = 0; y < size; ++y)
+    for (int x = 0; x < size; ++x)
+    {
+        bool in = true;
+        if (x < r && y < r) in = (x-r)*(x-r) + (y-r)*(y-r) <= r*r;
+        else if (x >= size-r && y < r) in = (x-(size-1-r))*(x-(size-1-r)) + (y-r)*(y-r) <= r*r;
+        else if (x < r && y >= size-r) in = (x-r)*(x-r) + (y-(size-1-r))*(y-(size-1-r)) <= r*r;
+        else if (x >= size-r && y >= size-r) in = (x-(size-1-r))*(x-(size-1-r)) + (y-(size-1-r))*(y-(size-1-r)) <= r*r;
+        if (in)
+        {
+            unsigned char a = 255;
+            unsigned char g = (unsigned char)(140 + (y * 60 / size));
+            unsigned char b = 230;
+            unsigned char rr = 45;
+            unsigned int argb = (a<<24) | (rr<<16) | (g<<8) | (b);
+            setpx(x,y,argb);
+        }
+    }
+    for (int y = 8; y <= 24; ++y) for (int x = 10; x <= 13; ++x) setpx(x,y,0xFFFFFFFF);
+    for (int y = 8; y <= 24; ++y) for (int x = 19; x <= 22; ++x) setpx(x,y,0xFFFFFFFF);
+    for (int x = 13; x <= 19; ++x) { setpx(x,8,0xFFFFFFFF); setpx(x,24,0xFFFFFFFF);} 
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, NULL);
+    ICONINFO ii{}; ii.fIcon = TRUE; ii.hbmColor = color; ii.hbmMask = mask;
+    HICON h = CreateIconIndirect(&ii);
+    DeleteObject(color); DeleteObject(mask);
+    return h;
+#else
+    return nullptr;
+#endif
+}
 
 static void AddTrayIcon(HWND hWnd)
 {
@@ -515,7 +571,7 @@ static void AddTrayIcon(HWND hWnd)
     nid.uID = TRAY_ICON_ID;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    nid.hIcon = g_appIcon ? g_appIcon : LoadIcon(NULL, IDI_APPLICATION);
     lstrcpyn(nid.szTip, TEXT("单词学习提醒"), ARRAYSIZE(nid.szTip));
     Shell_NotifyIcon(NIM_ADD, &nid);
 }
@@ -570,7 +626,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_APP+1: // WM_TRAYICON
-        if (lParam == WM_LBUTTONDBLCLK)
+        if (lParam == WM_LBUTTONUP)
         {
             ShowWindow(hWnd, SW_SHOW);
             SetForegroundWindow(hWnd);
@@ -585,6 +641,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     case WM_DESTROY:
         RemoveTrayIcon();
+        if (g_appIcon) { DestroyIcon(g_appIcon); g_appIcon = nullptr; }
         PostQuitMessage(0);
         return 0;
     }
@@ -596,6 +653,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     // Create Win32 window
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
     RegisterClassEx(&wc);
+    g_appIcon = CreateAppIcon();
+    wc.hIcon = wc.hIconSm = g_appIcon ? g_appIcon : wc.hIcon;
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Dear ImGui Minimal Example (D3D11)"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 720, NULL, NULL, wc.hInstance, NULL);
 
     // Initialize D3D
