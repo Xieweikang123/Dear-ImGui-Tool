@@ -29,6 +29,11 @@ namespace WordReminder
         int reminderType = 0; // 0: 自定义, 1: 快速预设
         bool showReminderPopup = false;
         int selectedWordIndex = -1;
+        // 编辑暂存
+        bool isEditing = false;
+        char editWord[256] = "";
+        char editMeaning[512] = "";
+        char editPronunciation[256] = "";
         
         // 设置
         bool autoShowReminders = true;
@@ -206,6 +211,9 @@ namespace WordReminder
     // 右上角自定义置顶弹窗
     static HWND g_reminderHwnd = nullptr;
     static std::wstring g_reminderText;
+    static HFONT g_fontTitle = nullptr;
+    static HFONT g_fontText = nullptr;
+    static HFONT g_fontButton = nullptr;
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
 
@@ -233,21 +241,87 @@ namespace WordReminder
         SaveWords();
     }
 
+    static int MeasureTextWidth(HFONT font, const wchar_t* text)
+    {
+        HDC hdc = GetDC(nullptr);
+        HFONT old = nullptr;
+        if (font) old = (HFONT)SelectObject(hdc, font);
+        SIZE sz{0,0};
+        GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &sz);
+        if (old) SelectObject(hdc, old);
+        ReleaseDC(nullptr, hdc);
+        return sz.cx;
+    }
+
+    static int IdealButtonWidth(const wchar_t* label)
+    {
+        int textW = MeasureTextWidth(g_fontButton, label);
+        return textW + 36; // padding for left/right and round-rect margins
+    }
+
+    static void LayoutButtons(HWND hwnd)
+    {
+        RECT rc; GetClientRect(hwnd, &rc);
+        int w1 = max(110, IdealButtonWidth(L"标记已复习"));
+        int w2 = max(110, IdealButtonWidth(L"稍后提醒"));
+        int w3 = max(110, IdealButtonWidth(L"关闭"));
+        int btnHeight = 34, gap = 12;
+        int totalWidth = w1 + w2 + w3 + gap * 2;
+        int startX = rc.right - totalWidth - 16;
+        int y = rc.bottom - btnHeight - 14;
+        HWND btnReviewed = GetDlgItem(hwnd, BTN_REVIEWED);
+        HWND btnSnooze = GetDlgItem(hwnd, BTN_SNOOZE);
+        HWND btnClose = GetDlgItem(hwnd, BTN_CLOSE);
+        if (btnReviewed) MoveWindow(btnReviewed, startX, y, w1, btnHeight, TRUE);
+        if (btnSnooze)   MoveWindow(btnSnooze,   startX + w1 + gap, y, w2, btnHeight, TRUE);
+        if (btnClose)    MoveWindow(btnClose,    startX + w1 + gap + w2 + gap, y, w3, btnHeight, TRUE);
+    }
+
     static LRESULT CALLBACK ReminderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         switch (msg)
         {
             case WM_CREATE:
             {
-                CreateWindowW(L"BUTTON", L"标记已复习",
-                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                              20, 140, 90, 28, hwnd, (HMENU)BTN_REVIEWED, GetModuleHandleW(nullptr), nullptr);
-                CreateWindowW(L"BUTTON", L"稍后提醒",
-                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                              120, 140, 90, 28, hwnd, (HMENU)BTN_SNOOZE, GetModuleHandleW(nullptr), nullptr);
-                CreateWindowW(L"BUTTON", L"关闭",
-                              WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                              220, 140, 60, 28, hwnd, (HMENU)BTN_CLOSE, GetModuleHandleW(nullptr), nullptr);
+                // Fonts
+                if (!g_fontTitle)
+                {
+                    g_fontTitle = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                }
+                if (!g_fontText)
+                {
+                    g_fontText = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                }
+                if (!g_fontButton)
+                {
+                    g_fontButton = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                }
+
+                HWND b1 = CreateWindowW(L"BUTTON", L"标记已复习",
+                              WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                              0, 0, 0, 0, hwnd, (HMENU)BTN_REVIEWED, GetModuleHandleW(nullptr), nullptr);
+                HWND b2 = CreateWindowW(L"BUTTON", L"稍后提醒",
+                              WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                              0, 0, 0, 0, hwnd, (HMENU)BTN_SNOOZE, GetModuleHandleW(nullptr), nullptr);
+                HWND b3 = CreateWindowW(L"BUTTON", L"关闭",
+                              WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                              0, 0, 0, 0, hwnd, (HMENU)BTN_CLOSE, GetModuleHandleW(nullptr), nullptr);
+                if (b1) SendMessageW(b1, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
+                if (b2) SendMessageW(b2, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
+                if (b3) SendMessageW(b3, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
+                LayoutButtons(hwnd);
+                SetTimer(hwnd, 1, 15000, nullptr); // 15秒自动关闭
+                return 0;
+            }
+            case WM_SIZE:
+            {
+                LayoutButtons(hwnd);
                 return 0;
             }
             case WM_COMMAND:
@@ -281,23 +355,87 @@ namespace WordReminder
                 HDC hdc = BeginPaint(hwnd, &ps);
                 RECT rc;
                 GetClientRect(hwnd, &rc);
+                HBRUSH bgWnd = CreateSolidBrush(RGB(248, 249, 251));
+                FillRect(hdc, &rc, bgWnd);
+                DeleteObject(bgWnd);
 
-                HBRUSH bg = CreateSolidBrush(RGB(255, 153, 51));
-                FillRect(hdc, &rc, bg);
+                RECT content = { rc.left + 16, rc.top + 16, rc.right - 16, rc.bottom - 64 };
+                HBRUSH bg = CreateSolidBrush(RGB(45, 140, 255));
+                HPEN pen = CreatePen(PS_SOLID, 1, RGB(30, 118, 224));
+                HGDIOBJ oldPen = SelectObject(hdc, pen);
+                HGDIOBJ oldBrush = SelectObject(hdc, bg);
+                RoundRect(hdc, content.left, content.top, content.right, content.bottom, 8, 8);
+                SelectObject(hdc, oldBrush);
+                SelectObject(hdc, oldPen);
                 DeleteObject(bg);
+                DeleteObject(pen);
 
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, RGB(255, 255, 255));
-
-                RECT textRc = { 16, 12, rc.right - 16, 130 };
+                if (g_fontText) SelectObject(hdc, g_fontText);
+                RECT textRc = { content.left + 12, content.top + 12, content.right - 12, content.bottom - 12 };
                 DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 EndPaint(hwnd, &ps);
                 return 0;
             }
+            case WM_DRAWITEM:
+            {
+                LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
+                if (!dis) break;
+                bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+                COLORREF fill = pressed ? RGB(29, 112, 214) : RGB(45, 140, 255);
+                COLORREF border = RGB(30, 118, 224);
+                HBRUSH b = CreateSolidBrush(fill);
+                HPEN p = CreatePen(PS_SOLID, 1, border);
+                HGDIOBJ oldB = SelectObject(dis->hDC, b);
+                HGDIOBJ oldP = SelectObject(dis->hDC, p);
+                RoundRect(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom, 6, 6);
+                SelectObject(dis->hDC, oldB);
+                SelectObject(dis->hDC, oldP);
+                DeleteObject(b);
+                DeleteObject(p);
+                SetBkMode(dis->hDC, TRANSPARENT);
+                SetTextColor(dis->hDC, RGB(255,255,255));
+                if (g_fontButton) SelectObject(dis->hDC, g_fontButton);
+                wchar_t buf[128];
+                GetWindowTextW(dis->hwndItem, buf, 128);
+                DrawTextW(dis->hDC, buf, -1, (RECT*)&dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                return TRUE;
+            }
+            case WM_KEYDOWN:
+            {
+                if (wParam == VK_ESCAPE)
+                {
+                    g_state->showReminderPopup = false;
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                break;
+            }
+            case WM_TIMER:
+            {
+                if (wParam == 1)
+                {
+                    KillTimer(hwnd, 1);
+                    g_state->showReminderPopup = false;
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                break;
+            }
+            case WM_CLOSE:
+            {
+                g_state->showReminderPopup = false;
+                DestroyWindow(hwnd);
+                return 0;
+            }
             case WM_DESTROY:
             {
                 if (hwnd == g_reminderHwnd) g_reminderHwnd = nullptr;
+                if (g_fontTitle) { DeleteObject(g_fontTitle); g_fontTitle = nullptr; }
+                if (g_fontText) { DeleteObject(g_fontText); g_fontText = nullptr; }
+                if (g_fontButton) { DeleteObject(g_fontButton); g_fontButton = nullptr; }
                 return 0;
             }
         }
@@ -312,7 +450,7 @@ namespace WordReminder
         if (dueWords.empty()) { g_state->showReminderPopup = false; return; }
 
         std::ostringstream oss;
-        oss << "🔔 单词复习提醒\n\n";
+        oss << "🔔 提醒\n\n";
         for (const auto& entry : dueWords)
         {
             oss << "📖 " << entry.word << "\n";
@@ -330,8 +468,30 @@ namespace WordReminder
         static ATOM atom = RegisterClassW(&wc);
         (void)atom;
 
-        int width = 300;
-        int height = 180;
+        // 根据内容自适应窗口尺寸
+        int baseWidth = 380;
+        int baseHeight = 220;
+        SIZE contentSize = {0,0};
+        {
+            HDC hdc = GetDC(nullptr);
+            HFONT old = nullptr;
+            if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
+            RECT rcMeasure = {0,0,480,1000};
+            DrawTextW(hdc, g_reminderText.c_str(), -1, &rcMeasure, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+            contentSize.cx = rcMeasure.right - rcMeasure.left;
+            contentSize.cy = rcMeasure.bottom - rcMeasure.top;
+            if (old) SelectObject(hdc, old);
+            ReleaseDC(nullptr, hdc);
+        }
+        int width = max(baseWidth, contentSize.cx + 16 + 16 + 24);
+        int height = max(baseHeight, contentSize.cy + 16 + 16 + 64 + 50);
+
+        // Ensure width fits all buttons
+        int w1 = max(110, IdealButtonWidth(L"标记已复习"));
+        int w2 = max(110, IdealButtonWidth(L"稍后提醒"));
+        int w3 = max(110, IdealButtonWidth(L"关闭"));
+        int buttonsTotal = w1 + w2 + w3 + 12 * 2 + 16 + 16; // gaps + side margins
+        width = max(width, buttonsTotal);
 
         RECT workArea;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
@@ -341,8 +501,8 @@ namespace WordReminder
         g_reminderHwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             wc.lpszClassName,
-            L"单词复习提醒",
-            WS_POPUP | WS_CAPTION | WS_MINIMIZEBOX,
+            L"提醒",
+            WS_CAPTION | WS_SYSMENU,
             x, y, width, height,
             nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -678,6 +838,13 @@ namespace WordReminder
                     if (ImGui::Button("编辑"))
                     {
                         g_state->selectedWordIndex = i;
+                        g_state->isEditing = true;
+                        strncpy(g_state->editWord, entry.word.c_str(), sizeof(g_state->editWord));
+                        g_state->editWord[sizeof(g_state->editWord)-1] = '\0';
+                        strncpy(g_state->editPronunciation, entry.pronunciation.c_str(), sizeof(g_state->editPronunciation));
+                        g_state->editPronunciation[sizeof(g_state->editPronunciation)-1] = '\0';
+                        strncpy(g_state->editMeaning, entry.meaning.c_str(), sizeof(g_state->editMeaning));
+                        g_state->editMeaning[sizeof(g_state->editMeaning)-1] = '\0';
                     }
                     
                     ImGui::SameLine();
@@ -688,6 +855,32 @@ namespace WordReminder
                         continue;
                     }
                     
+                    // 内联编辑区域
+                    if (g_state->isEditing && g_state->selectedWordIndex == i)
+                    {
+                        ImGui::Spacing();
+                        ImGui::TextDisabled("编辑:");
+                        ImGui::InputText("单词", g_state->editWord, sizeof(g_state->editWord));
+                        ImGui::InputText("音标", g_state->editPronunciation, sizeof(g_state->editPronunciation));
+                        ImGui::InputTextMultiline("释义", g_state->editMeaning, sizeof(g_state->editMeaning), ImVec2(-1, 100));
+                        if (ImGui::Button("保存"))
+                        {
+                            auto& e = g_state->words[i];
+                            e.word = g_state->editWord;
+                            e.pronunciation = g_state->editPronunciation;
+                            e.meaning = g_state->editMeaning;
+                            SaveWords();
+                            g_state->isEditing = false;
+                            g_state->selectedWordIndex = -1;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("取消"))
+                        {
+                            g_state->isEditing = false;
+                            g_state->selectedWordIndex = -1;
+                        }
+                    }
+
                     ImGui::Separator();
                     ImGui::PopID();
                 }
@@ -696,6 +889,51 @@ namespace WordReminder
             ImGui::EndChild();
         }
         
+        // 编辑弹窗
+        if (g_state->selectedWordIndex >= 0 && g_state->selectedWordIndex < (int)g_state->words.size())
+        {
+            ImGui::SetNextWindowSize(ImVec2(460, 260), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("编辑单词", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                auto& entry = g_state->words[g_state->selectedWordIndex];
+                static char editWord[256];
+                static char editPron[256];
+                static char editMeaning[512];
+                static bool initialized = false;
+                if (!initialized || ImGui::IsWindowAppearing())
+                {
+                    strncpy(editWord, entry.word.c_str(), sizeof(editWord)); editWord[sizeof(editWord)-1] = '\0';
+                    strncpy(editPron, entry.pronunciation.c_str(), sizeof(editPron)); editPron[sizeof(editPron)-1] = '\0';
+                    strncpy(editMeaning, entry.meaning.c_str(), sizeof(editMeaning)); editMeaning[sizeof(editMeaning)-1] = '\0';
+                    initialized = true;
+                }
+
+                ImGui::InputText("单词", editWord, sizeof(editWord));
+                ImGui::InputText("音标", editPron, sizeof(editPron));
+                ImGui::InputTextMultiline("释义", editMeaning, sizeof(editMeaning), ImVec2(420, 120));
+
+                ImGui::Separator();
+                if (ImGui::Button("保存", ImVec2(200, 0)))
+                {
+                    entry.word = editWord;
+                    entry.pronunciation = editPron;
+                    entry.meaning = editMeaning;
+                    SaveWords();
+                    g_state->selectedWordIndex = -1;
+                    initialized = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("取消", ImVec2(200, 0)))
+                {
+                    g_state->selectedWordIndex = -1;
+                    initialized = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+        }
+
         // 检查是否需要显示提醒
         if (HasReminderToShow())
         {
