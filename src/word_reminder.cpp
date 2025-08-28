@@ -33,7 +33,6 @@ namespace WordReminder
         bool isEditing = false;
         char editWord[256] = "";
         char editMeaning[512] = "";
-        char editPronunciation[256] = "";
         
         // 设置
         bool autoShowReminders = true;
@@ -648,7 +647,7 @@ namespace WordReminder
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("➕ 添加新单词", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::BeginChild("AddWord", ImVec2(0, 0), true);
+            ImGui::BeginChild("AddWord", ImVec2(0, 200), true);
             
             ImGui::Columns(2, "add_word");
             ImGui::SetColumnWidth(0, 150);
@@ -657,10 +656,8 @@ namespace WordReminder
             ImGui::SameLine();
             ImGui::InputText("##Word", g_state->newWord, sizeof(g_state->newWord));
             
+            // 已移除音标输入
             ImGui::NextColumn();
-            ImGui::Text("音标:");
-            ImGui::SameLine();
-            ImGui::InputText("##Pronunciation", g_state->newPronunciation, sizeof(g_state->newPronunciation));
             
             ImGui::NextColumn();
             ImGui::Text("释义:");
@@ -812,11 +809,7 @@ namespace WordReminder
                     ImGui::SameLine();
                     ImGui::Text("%s", entry.word.c_str());
                     
-                    if (!entry.pronunciation.empty())
-                    {
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("[%s]", entry.pronunciation.c_str());
-                    }
+                    // 已移除音标显示
                     
                     ImGui::TextWrapped("释义: %s", entry.meaning.c_str());
                     
@@ -841,8 +834,6 @@ namespace WordReminder
                         g_state->isEditing = true;
                         strncpy(g_state->editWord, entry.word.c_str(), sizeof(g_state->editWord));
                         g_state->editWord[sizeof(g_state->editWord)-1] = '\0';
-                        strncpy(g_state->editPronunciation, entry.pronunciation.c_str(), sizeof(g_state->editPronunciation));
-                        g_state->editPronunciation[sizeof(g_state->editPronunciation)-1] = '\0';
                         strncpy(g_state->editMeaning, entry.meaning.c_str(), sizeof(g_state->editMeaning));
                         g_state->editMeaning[sizeof(g_state->editMeaning)-1] = '\0';
                     }
@@ -855,19 +846,25 @@ namespace WordReminder
                         continue;
                     }
                     
+                    ImGui::SameLine();
+                    if (ImGui::Button("5秒后提醒"))
+                    {
+                        auto& e = g_state->words[i];
+                        e.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(5);
+                        SaveWords();
+                    }
+                    
                     // 内联编辑区域
                     if (g_state->isEditing && g_state->selectedWordIndex == i)
                     {
                         ImGui::Spacing();
                         ImGui::TextDisabled("编辑:");
                         ImGui::InputText("单词", g_state->editWord, sizeof(g_state->editWord));
-                        ImGui::InputText("音标", g_state->editPronunciation, sizeof(g_state->editPronunciation));
                         ImGui::InputTextMultiline("释义", g_state->editMeaning, sizeof(g_state->editMeaning), ImVec2(-1, 100));
                         if (ImGui::Button("保存"))
                         {
                             auto& e = g_state->words[i];
                             e.word = g_state->editWord;
-                            e.pronunciation = g_state->editPronunciation;
                             e.meaning = g_state->editMeaning;
                             SaveWords();
                             g_state->isEditing = false;
