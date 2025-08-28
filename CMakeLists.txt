@@ -6,6 +6,11 @@ project(DearImGuiExample)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Ensure Windows APIs use wide-character variants; critical for IME/Unicode input
+if(WIN32)
+    add_compile_definitions(UNICODE _UNICODE)
+endif()
+
 option(USE_D3D11 "Use Win32 + DirectX11 backend on Windows" ON)
 option(USE_OPENGL2 "Use ImGui OpenGL2 backend instead of OpenGL3" OFF)
 

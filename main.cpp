@@ -548,6 +548,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     // Setup Platform/Renderer bindings
     ImGui_ImplWin32_Init(hwnd);
+    // Enable IME in Win32 backend explicitly
+    ImGui::GetIO().WantCaptureKeyboard = true;
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     // Initialize feature manager and all features
@@ -596,7 +598,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                 if (!fs::exists(candidate)) continue;
                 std::string p = candidate.string();
                 AppendLog(std::string("[font] D3D11: trying bundled font: ") + p);
-                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
+                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                 if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (bundled): ") + p); break; }
                 else { AppendLog(std::string("[font] failed to load: ") + p); }
             }
@@ -611,7 +614,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                 {
                     std::string p = entry.path().string();
                     AppendLog(std::string("[font] D3D11: scanning try: ") + p);
-                    chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                    ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
+                    chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                     if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (scanned): ") + p); break; }
                 }
             }
@@ -631,7 +635,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             {
                 AppendLog(std::string("[font] D3D11: try system font: ") + fp);
                 if (!fs::exists(fp)) { AppendLog("[font] D3D11: not found"); continue; }
-                chineseFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, nullptr, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
+                chineseFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                 if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (system): ") + fp); break; }
             }
         }

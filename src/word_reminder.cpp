@@ -94,12 +94,15 @@ namespace WordReminder
         }
     }
     
-    // 保存单词到文件
+    // 保存单词到文件 (UTF-8)
     void SaveWords()
     {
-        std::ofstream file("word_reminder_data.txt");
+        std::ofstream file("word_reminder_data.txt", std::ios::binary);
         if (file.is_open())
         {
+            // 写入 BOM 以便在一些编辑器中正确显示
+            const unsigned char bom[3] = {0xEF, 0xBB, 0xBF};
+            file.write(reinterpret_cast<const char*>(bom), 3);
             for (const auto& entry : g_state->words)
             {
                 file << entry.word << "|"
@@ -114,13 +117,22 @@ namespace WordReminder
         }
     }
     
-    // 从文件加载单词
+    // 从文件加载单词 (UTF-8)
     void LoadWords()
     {
-        std::ifstream file("word_reminder_data.txt");
+        std::ifstream file("word_reminder_data.txt", std::ios::binary);
         if (file.is_open())
         {
             std::string line;
+            // 跳过 UTF-8 BOM（若存在）
+            char bom[3] = {0};
+            file.read(bom, 3);
+            if (!(static_cast<unsigned char>(bom[0]) == 0xEF && static_cast<unsigned char>(bom[1]) == 0xBB && static_cast<unsigned char>(bom[2]) == 0xBF))
+            {
+                // 无BOM，则回退到文件开头
+                file.clear();
+                file.seekg(0, std::ios::beg);
+            }
             while (std::getline(file, line))
             {
                 std::istringstream iss(line);
@@ -484,6 +496,15 @@ namespace WordReminder
                 DrawTextW(dis->hDC, buf, -1, (RECT*)&dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 return TRUE;
             }
+            case WM_SYSCOMMAND:
+            {
+                if ((wParam & 0xFFF0) == SC_CLOSE)
+                {
+                    // 屏蔽右上角关闭与 Alt+F4
+                    return 0;
+                }
+                break;
+            }
             case WM_CTLCOLORBTN:
             {
                 HDC hdcBtn = (HDC)wParam;
@@ -623,7 +644,7 @@ namespace WordReminder
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
             L"提醒",
-            WS_CAPTION | WS_SYSMENU,
+            WS_CAPTION,
             x, y, width, height,
             nullptr, nullptr, wc.hInstance, nullptr);
 
