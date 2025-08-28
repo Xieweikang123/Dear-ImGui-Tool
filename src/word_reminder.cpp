@@ -13,8 +13,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellscalingapi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "Dwmapi.lib")
+#pragma comment(lib, "Shcore.lib")
 #endif
 #include <algorithm>
 
@@ -268,6 +270,51 @@ namespace WordReminder
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
 
+#ifdef _WIN32
+    static float GetDpiScale(HWND hwnd)
+    {
+        // Prefer GetDpiForWindow on Win10+
+        HMODULE user32 = LoadLibraryW(L"user32.dll");
+        if (user32)
+        {
+            typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+            auto pGetDpiForWindow = (GetDpiForWindowFn)GetProcAddress(user32, "GetDpiForWindow");
+            if (pGetDpiForWindow)
+            {
+                UINT dpi = pGetDpiForWindow(hwnd);
+                FreeLibrary(user32);
+                return dpi > 0 ? (float)dpi / 96.0f : 1.0f;
+            }
+            FreeLibrary(user32);
+        }
+        // Fallback: assume 1.0
+        return 1.0f;
+    }
+
+    static float GetSystemDpiScale()
+    {
+        // Try Win10+ system DPI
+        HMODULE user32 = LoadLibraryW(L"user32.dll");
+        if (user32)
+        {
+            typedef UINT (WINAPI *GetDpiForSystemFn)();
+            auto pGetDpiForSystem = (GetDpiForSystemFn)GetProcAddress(user32, "GetDpiForSystem");
+            if (pGetDpiForSystem)
+            {
+                UINT dpi = pGetDpiForSystem();
+                FreeLibrary(user32);
+                return dpi > 0 ? (float)dpi / 96.0f : 1.0f;
+            }
+            FreeLibrary(user32);
+        }
+        // Fallback: primary monitor DPI
+        HMONITOR hMon = MonitorFromPoint(POINT{0,0}, MONITOR_DEFAULTTOPRIMARY);
+        UINT dx = 96, dy = 96;
+        GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dx, &dy);
+        return (float)dx / 96.0f;
+    }
+#endif
+
     static void MarkAllDueReviewed()
     {
         for (int i = 0; i < static_cast<int>(g_state->words.size()); i++)
@@ -335,21 +382,22 @@ namespace WordReminder
             case WM_CREATE:
             {
                 // Fonts
+                const float s = GetDpiScale(hwnd);
                 if (!g_fontTitle)
                 {
-                    g_fontTitle = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                    g_fontTitle = CreateFontW((int)(20 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
                 if (!g_fontText)
                 {
-                    g_fontText = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    g_fontText = CreateFontW((int)(16 * s), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
                 if (!g_fontButton)
                 {
-                    g_fontButton = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                    g_fontButton = CreateFontW((int)(15 * s), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
@@ -611,14 +659,16 @@ namespace WordReminder
         (void)atom;
 
         // 根据内容自适应窗口尺寸
-        int baseWidth = 380;
-        int baseHeight = 220;
+        // Base size, scale by desktop DPI (use system DPI since window not yet created)
+        float s = GetSystemDpiScale();
+        int baseWidth = (int)(380 * s);
+        int baseHeight = (int)(220 * s);
         SIZE contentSize = {0,0};
         {
             HDC hdc = GetDC(nullptr);
             HFONT old = nullptr;
             if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
-            RECT rcMeasure = {0,0,480,1000};
+            RECT rcMeasure = {0,0,(LONG)(480 * s),1000};
             DrawTextW(hdc, g_reminderText.c_str(), -1, &rcMeasure, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
             contentSize.cx = rcMeasure.right - rcMeasure.left;
             contentSize.cy = rcMeasure.bottom - rcMeasure.top;
@@ -629,9 +679,9 @@ namespace WordReminder
         int height = std::max<int>(baseHeight, static_cast<int>(contentSize.cy) + 16 + 16 + 64 + 50);
 
         // Ensure width fits all buttons
-        int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
-        int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
-        int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
+        int w1 = std::max<int>((int)(110 * s), IdealButtonWidth(L"标记已复习"));
+        int w2 = std::max<int>((int)(110 * s), IdealButtonWidth(L"稍后提醒"));
+        int w3 = std::max<int>((int)(110 * s), IdealButtonWidth(L"关闭"));
         int buttonsTotal = w1 + w2 + w3 + 12 * 2 + 16 + 16; // gaps + side margins
         width = std::max<int>(width, buttonsTotal);
 
@@ -771,7 +821,10 @@ namespace WordReminder
         }
         
         // 统计信息区域
-        ImGui::BeginChild("Stats", ImVec2(0, 80), true);
+        {
+            const float uiScale = ImGui::GetFontSize() / 16.0f;
+            ImGui::BeginChild("Stats", ImVec2(0, 110.0f * uiScale), true);
+        }
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "📊 学习统计");
         ImGui::Separator();
         
@@ -790,10 +843,11 @@ namespace WordReminder
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("➕ 添加新单词", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::BeginChild("AddWord", ImVec2(0, 200), true);
+            const float uiScale = ImGui::GetFontSize() / 16.0f;
+            ImGui::BeginChild("AddWord", ImVec2(0, 260.0f * uiScale), true);
             
             ImGui::Columns(2, "add_word");
-            ImGui::SetColumnWidth(0, 150);
+            ImGui::SetColumnWidth(0, 150.0f * uiScale);
             
             ImGui::Text("单词:");
             ImGui::SameLine();
@@ -805,61 +859,52 @@ namespace WordReminder
             ImGui::NextColumn();
             ImGui::Text("释义:");
             ImGui::SameLine();
-            ImGui::InputTextMultiline("##Meaning", g_state->newMeaning, sizeof(g_state->newMeaning));
+            ImGui::InputTextMultiline("##Meaning", g_state->newMeaning, sizeof(g_state->newMeaning), ImVec2(-1, 80.0f * uiScale));
             
                          ImGui::NextColumn();
              
-             // 提醒时间设置区域
-             ImGui::Text("提醒时间:");
-             ImGui::SameLine();
-             
-             // 快速预设按钮
-             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
-             
-             const char* presets[] = {"5秒","30秒", "1分钟", "5分钟", "10分钟", "15分钟", "30分钟", "1小时", "2小时", "4小时"};
-             int presetSeconds[] = {5,30, 60, 300, 600, 900, 1800, 3600, 7200, 14400};
-             
-             for (int i = 0; i < 10; i++)
-             {
-                 if (i > 0) ImGui::SameLine();
-                 
-                 bool isSelected = (g_state->reminderSeconds == presetSeconds[i]);
-                 if (isSelected)
-                 {
-                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 1.0f, 1.0f));
-                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 1.0f, 1.0f));
-                 }
-                 
-                 if (ImGui::Button(presets[i], ImVec2(60, 24)))
-                 {
-                     g_state->reminderSeconds = presetSeconds[i];
-                 }
-                 
-                 if (isSelected)
-                 {
-                     ImGui::PopStyleColor();
-                     ImGui::PopStyleColor();
-                 }
-             }
-             
-             ImGui::PopStyleVar();
-             
-             ImGui::Spacing();
-             ImGui::Text("自定义时间(分钟):");
-             static int minutesOnly = 30;
-             if (ImGui::IsWindowAppearing())
-             {
-                 minutesOnly = std::max(1, g_state->reminderSeconds / 60);
-             }
-             if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
-             {
-                 g_state->reminderSeconds = minutesOnly * 60;
-             }
-             ImGui::Columns(1);
+            // 提醒时间设置区域（预设 + 自定义分钟）
+            ImGui::Text("提醒时间:");
+            ImGui::SameLine();
             
+            // 预设按钮（按 DPI/字号缩放）
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f * uiScale, 6.0f * uiScale));
+            const char* presets[] = {"5秒","30秒","1分钟","5分钟","10分钟","15分钟","30分钟","1小时","2小时","4小时"};
+            int presetSeconds[] = {5,30,60,300,600,900,1800,3600,7200,14400};
+            for (int i = 0; i < 10; ++i)
+            {
+                if (i > 0) ImGui::SameLine();
+                bool isSelected = (g_state->reminderSeconds == presetSeconds[i]);
+                if (isSelected)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 1.0f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 1.0f, 1.0f));
+                }
+                if (ImGui::Button(presets[i], ImVec2(72.0f * uiScale, 28.0f * uiScale)))
+                {
+                    g_state->reminderSeconds = presetSeconds[i];
+                }
+                if (isSelected)
+                {
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleColor();
+                }
+            }
+            ImGui::PopStyleVar();
+            
+            ImGui::Spacing();
+            ImGui::Text("自定义时间(分钟):");
+            static int minutesOnly = 30;
+            if (ImGui::IsWindowAppearing())
+            {
+                minutesOnly = std::max(1, g_state->reminderSeconds / 60);
+            }
+            if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
+            {
+                g_state->reminderSeconds = minutesOnly * 60;
+            }
             ImGui::Columns(1);
             
-            ImGui::EndChild();
             
             ImGui::Spacing();
             if (ImGui::Button("添加单词", ImVec2(-1, 0)))
@@ -874,6 +919,8 @@ namespace WordReminder
                     memset(g_state->newPronunciation, 0, sizeof(g_state->newPronunciation));
                 }
             }
+            // Ensure child region is properly closed
+            ImGui::EndChild();
         }
         
         // 单词列表区域

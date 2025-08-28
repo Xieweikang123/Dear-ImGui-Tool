@@ -23,6 +23,8 @@
 #include <objbase.h>
 #include <oleauto.h>
 #include <shellapi.h>
+#include <shellscalingapi.h>
+#pragma comment(lib, "Shcore.lib")
 #endif
 
 namespace fs = std::filesystem;
@@ -563,6 +565,67 @@ static HICON CreateAppIcon()
 #endif
 }
 
+// Improve Windows DPI awareness to avoid blurry text on scaled displays
+static void EnablePerMonitorDpiAwareness()
+{
+#ifdef _WIN32
+    // Try modern per-monitor v2 DPI awareness if available
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32)
+    {
+        using SetDpiCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto pSetAwarenessCtx = (SetDpiCtx)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        if (pSetAwarenessCtx)
+        {
+            pSetAwarenessCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            FreeLibrary(user32);
+            return;
+        }
+        FreeLibrary(user32);
+    }
+    // Fallback to system DPI aware
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    if (shcore)
+    {
+        typedef HRESULT (WINAPI *SetProcessDpiAwarenessFn)(PROCESS_DPI_AWARENESS);
+        auto pSetProcessDpiAwareness = (SetProcessDpiAwarenessFn)GetProcAddress(shcore, "SetProcessDpiAwareness");
+        if (pSetProcessDpiAwareness)
+            pSetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+        FreeLibrary(shcore);
+    }
+#endif
+}
+
+static float GetDpiScaleForWindow(HWND hwnd)
+{
+#ifdef _WIN32
+    // Prefer GetDpiForWindow (Win10+)
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32)
+    {
+        typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+        auto pGetDpiForWindow = (GetDpiForWindowFn)GetProcAddress(user32, "GetDpiForWindow");
+        if (pGetDpiForWindow)
+        {
+            UINT dpi = pGetDpiForWindow(hwnd);
+            FreeLibrary(user32);
+            return dpi > 0 ? (float)dpi / 96.0f : 1.0f;
+        }
+        FreeLibrary(user32);
+    }
+    // Fallback: per-monitor DPI via Shcore
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT dpiX = 96, dpiY = 96;
+    if (GetDpiForMonitor)
+    {
+        GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+    }
+    return (float)dpiX / 96.0f;
+#else
+    return 1.0f;
+#endif
+}
+
 static void AddTrayIcon(HWND hWnd)
 {
     if (nid.cbSize != 0) return;
@@ -659,6 +722,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     // Create Win32 window
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
     RegisterClassEx(&wc);
+    EnablePerMonitorDpiAwareness();
     g_appIcon = CreateAppIcon();
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Dear ImGui Minimal Example (D3D11)"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 720, NULL, NULL, wc.hInstance, NULL);
     if (g_appIcon && hwnd)
@@ -686,6 +750,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     ImGui::StyleColorsDark();
+    const float dpiScale = GetDpiScaleForWindow(hwnd);
+    ImGui::GetStyle().ScaleAllSizes(dpiScale);
 
     // Setup Platform/Renderer bindings
     ImGui_ImplWin32_Init(hwnd);
@@ -739,8 +805,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                 if (!fs::exists(candidate)) continue;
                 std::string p = candidate.string();
                 AppendLog(std::string("[font] D3D11: trying bundled font: ") + p);
-                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
-                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f; cfg.PixelSnapH = true;
+                chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f * dpiScale, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                 if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (bundled): ") + p); break; }
                 else { AppendLog(std::string("[font] failed to load: ") + p); }
             }
@@ -755,8 +821,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                 {
                     std::string p = entry.path().string();
                     AppendLog(std::string("[font] D3D11: scanning try: ") + p);
-                    ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
-                    chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                    ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f; cfg.PixelSnapH = true;
+                    chineseFont = io.Fonts->AddFontFromFileTTF(p.c_str(), 16.0f * dpiScale, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                     if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (scanned): ") + p); break; }
                 }
             }
@@ -776,8 +842,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             {
                 AppendLog(std::string("[font] D3D11: try system font: ") + fp);
                 if (!fs::exists(fp)) { AppendLog("[font] D3D11: not found"); continue; }
-                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f;
-                chineseFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+                ImFontConfig cfg; cfg.OversampleH = 3; cfg.OversampleV = 1; cfg.RasterizerMultiply = 1.0f; cfg.PixelSnapH = true;
+                chineseFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f * dpiScale, &cfg, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
                 if (chineseFont) { AppendLog(std::string("[font] Loaded Chinese font (system): ") + fp); break; }
             }
         }
@@ -820,7 +886,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
                 fs::path p = dir / fs::path(rel).filename();
                 if (!fs::exists(p)) continue;
                 AppendLog(std::string("[font] D3D11: merge emoji bundled: ") + p.string());
-                emojiFont = io.Fonts->AddFontFromFileTTF(p.string().c_str(), 16.0f, &cfg, emojiRanges.Data);
+                emojiFont = io.Fonts->AddFontFromFileTTF(p.string().c_str(), 16.0f * dpiScale, &cfg, emojiRanges.Data);
                 if (emojiFont) { AppendLog(std::string("[font] Merged emoji font (bundled): ") + p.string()); break; }
             }
         }
@@ -831,7 +897,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             {
                 if (!fs::exists(fp)) continue;
                 AppendLog(std::string("[font] D3D11: merge emoji system: ") + fp);
-                emojiFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f, &cfg, emojiRanges.Data);
+                emojiFont = io.Fonts->AddFontFromFileTTF(fp, 16.0f * dpiScale, &cfg, emojiRanges.Data);
                 if (emojiFont) { AppendLog(std::string("[font] Merged emoji font (system): ") + fp); break; }
             }
         }
