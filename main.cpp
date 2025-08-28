@@ -596,7 +596,6 @@ static void ShowTrayMenu(HWND hWnd)
     {
         ShowWindow(hWnd, SW_SHOW);
         SetForegroundWindow(hWnd);
-        RemoveTrayIcon();
     }
     else if (cmd == ID_TRAY_EXIT)
     {
@@ -638,7 +637,6 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             ShowWindow(hWnd, SW_SHOW);
             SetForegroundWindow(hWnd);
-            RemoveTrayIcon();
             return 0;
         }
         else if (lParam == WM_RBUTTONUP)
@@ -678,6 +676,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
+    // Keep tray icon persistent regardless of window visibility
+    AddTrayIcon(hwnd);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
