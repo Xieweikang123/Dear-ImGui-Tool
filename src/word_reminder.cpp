@@ -252,6 +252,7 @@ namespace WordReminder
     static HFONT g_fontButton = nullptr;
     static bool g_darkMode = false;
     static BYTE g_animOpacity = 0; // 0-255，用于淡入
+    static HBRUSH g_btnBgBrush = nullptr; // 为按钮提供与父窗口一致的背景
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
 
@@ -303,10 +304,10 @@ namespace WordReminder
         int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
         int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
         int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
-        int btnHeight = 34, gap = 12;
+        int btnHeight = 32, gap = 10;
         int totalWidth = w1 + w2 + w3 + gap * 2;
-        int startX = rc.right - totalWidth - 16;
-        int y = rc.bottom - btnHeight - 14;
+        int startX = rc.right - totalWidth - 14;
+        int y = rc.bottom - btnHeight - 12;
         HWND btnReviewed = GetDlgItem(hwnd, BTN_REVIEWED);
         HWND btnSnooze = GetDlgItem(hwnd, BTN_SNOOZE);
         HWND btnClose = GetDlgItem(hwnd, BTN_CLOSE);
@@ -324,19 +325,19 @@ namespace WordReminder
                 // Fonts
                 if (!g_fontTitle)
                 {
-                    g_fontTitle = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                    g_fontTitle = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
                 if (!g_fontText)
                 {
-                    g_fontText = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    g_fontText = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
                 if (!g_fontButton)
                 {
-                    g_fontButton = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                    g_fontButton = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
@@ -359,6 +360,13 @@ namespace WordReminder
                 // 应用系统主题及DWM效果
                 g_darkMode = IsSystemDarkMode();
                 ApplyDwmWindowAttributes(hwnd, g_darkMode);
+
+                // 准备按钮背景刷（与父窗口背景一致，避免四角发白）
+                {
+                    COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(245, 246, 248);
+                    if (g_btnBgBrush) { DeleteObject(g_btnBgBrush); g_btnBgBrush = nullptr; }
+                    g_btnBgBrush = CreateSolidBrush(clrWnd);
+                }
 
                 // 初始透明并淡入
                 g_animOpacity = 0;
@@ -403,15 +411,15 @@ namespace WordReminder
                 RECT rc;
                 GetClientRect(hwnd, &rc);
                 // 背景
-                COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(248, 249, 251);
+                COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(245, 246, 248);
                 HBRUSH bgWnd = CreateSolidBrush(clrWnd);
                 FillRect(hdc, &rc, bgWnd);
                 DeleteObject(bgWnd);
 
                 // 内容卡片
-                RECT content = { rc.left + 16, rc.top + 16, rc.right - 16, rc.bottom - 64 };
+                RECT content = { rc.left + 14, rc.top + 14, rc.right - 14, rc.bottom - 58 };
                 COLORREF clrCard = g_darkMode ? RGB(43, 43, 48) : RGB(255, 255, 255);
-                COLORREF clrBorder = g_darkMode ? RGB(64, 64, 72) : RGB(230, 234, 238);
+                COLORREF clrBorder = g_darkMode ? RGB(64, 64, 72) : RGB(222, 226, 232);
                 HBRUSH brCard = CreateSolidBrush(clrCard);
                 HPEN pnCard = CreatePen(PS_SOLID, 1, clrBorder);
                 HGDIOBJ oldPen = SelectObject(hdc, pnCard);
@@ -424,7 +432,7 @@ namespace WordReminder
 
                 // 左侧色条强调
                 HBRUSH brAccent = CreateSolidBrush(RGB(45, 140, 255));
-                RECT accent = { content.left, content.top, content.left + 4, content.bottom };
+                RECT accent = { content.left, content.top, content.left + 3, content.bottom };
                 FillRect(hdc, &accent, brAccent);
                 DeleteObject(brAccent);
 
@@ -432,13 +440,13 @@ namespace WordReminder
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, g_darkMode ? RGB(240, 240, 240) : RGB(28, 28, 30));
                 if (g_fontTitle) SelectObject(hdc, g_fontTitle);
-                RECT titleRc = { content.left + 12, content.top + 10, content.right - 12, content.top + 40 };
+                RECT titleRc = { content.left + 10, content.top + 8, content.right - 10, content.top + 36 };
                 DrawTextW(hdc, L"提醒", -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
                 // 正文
                 if (g_fontText) SelectObject(hdc, g_fontText);
                 SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                RECT textRc = { content.left + 12, content.top + 44, content.right - 12, content.bottom - 12 };
+                RECT textRc = { content.left + 10, content.top + 40, content.right - 10, content.bottom - 10 };
                 DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 EndPaint(hwnd, &ps);
@@ -475,6 +483,29 @@ namespace WordReminder
                 GetWindowTextW(dis->hwndItem, buf, 128);
                 DrawTextW(dis->hDC, buf, -1, (RECT*)&dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 return TRUE;
+            }
+            case WM_CTLCOLORBTN:
+            {
+                HDC hdcBtn = (HDC)wParam;
+                SetBkMode(hdcBtn, TRANSPARENT);
+                // 返回与父窗口一致的背景刷，避免按钮圆角外漏出浅色
+                COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(245, 246, 248);
+                LOGBRUSH lb{};
+                if (g_btnBgBrush)
+                {
+                    GetObject(g_btnBgBrush, sizeof(lb), &lb);
+                    COLORREF current = lb.lbColor;
+                    if (current != clrWnd)
+                    {
+                        DeleteObject(g_btnBgBrush);
+                        g_btnBgBrush = CreateSolidBrush(clrWnd);
+                    }
+                }
+                else
+                {
+                    g_btnBgBrush = CreateSolidBrush(clrWnd);
+                }
+                return (LRESULT)g_btnBgBrush;
             }
             case WM_KEYDOWN:
             {
@@ -524,6 +555,7 @@ namespace WordReminder
                 if (g_fontTitle) { DeleteObject(g_fontTitle); g_fontTitle = nullptr; }
                 if (g_fontText) { DeleteObject(g_fontText); g_fontText = nullptr; }
                 if (g_fontButton) { DeleteObject(g_fontButton); g_fontButton = nullptr; }
+                if (g_btnBgBrush) { DeleteObject(g_btnBgBrush); g_btnBgBrush = nullptr; }
                 return 0;
             }
         }
@@ -538,7 +570,7 @@ namespace WordReminder
         if (dueWords.empty()) { g_state->showReminderPopup = false; return; }
 
         std::ostringstream oss;
-        oss << "🔔 提醒\n\n";
+        // 只显示正文，不再重复标题“提醒”
         for (const auto& entry : dueWords)
         {
             oss << "📖 " << entry.word << "\n";
