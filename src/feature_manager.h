@@ -43,6 +43,8 @@ private:
     FeatureManager& operator=(const FeatureManager&) = delete;
     
     void RegisterFeatures();
+    void LoadState();
+    void SaveState() const;
     
     std::vector<FeatureInfo> features;
     bool showFeatureSelector = false;

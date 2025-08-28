@@ -3,6 +3,32 @@
 #include "vs_inspector.h"
 #include "word_reminder.h"
 #include "imgui.h"
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace {
+    static std::filesystem::path GetConfigPath()
+    {
+        // Store next to the executable or current working directory
+        std::error_code ec;
+        std::filesystem::path exeDir;
+#ifdef _WIN32
+        wchar_t exePathW[MAX_PATH] = {0};
+        if (GetModuleFileNameW(NULL, exePathW, MAX_PATH) > 0)
+            exeDir = std::filesystem::path(exePathW).parent_path();
+#endif
+        if (exeDir.empty()) exeDir = std::filesystem::current_path(ec);
+        if (ec) return std::filesystem::path("feature_state.ini");
+        return exeDir / "feature_state.ini";
+    }
+}
 
 FeatureManager& FeatureManager::GetInstance()
 {
@@ -13,6 +39,7 @@ FeatureManager& FeatureManager::GetInstance()
 void FeatureManager::Initialize()
 {
     RegisterFeatures();
+    LoadState();
     
     // Initialize all features
     for (auto& feature : features)
@@ -27,6 +54,7 @@ void FeatureManager::Initialize()
 void FeatureManager::Cleanup()
 {
     // Cleanup all features
+    SaveState();
     for (auto& feature : features)
     {
         if (feature.cleanupFunction)
@@ -87,6 +115,7 @@ void FeatureManager::EnableFeature(const std::string& name, bool enable)
         if (feature.name == name)
         {
             feature.enabled = enable;
+            SaveState();
             break;
         }
     }
@@ -117,6 +146,7 @@ void FeatureManager::DrawFeatureSelector()
             if (ImGui::Checkbox(feature.name.c_str(), &enabled))
             {
                 feature.enabled = enabled;
+                SaveState();
             }
             
             if (ImGui::IsItemHovered())
@@ -133,6 +163,7 @@ void FeatureManager::DrawFeatureSelector()
             {
                 feature.enabled = true;
             }
+            SaveState();
         }
         
         ImGui::SameLine();
@@ -143,7 +174,41 @@ void FeatureManager::DrawFeatureSelector()
             {
                 feature.enabled = false;
             }
+            SaveState();
         }
     }
     ImGui::End();
+}
+
+void FeatureManager::LoadState()
+{
+    const auto path = GetConfigPath();
+    std::error_code ec; if (!std::filesystem::exists(path, ec)) return;
+    std::ifstream ifs(path.string(), std::ios::in | std::ios::binary);
+    if (!ifs) return;
+    std::string line;
+    // Simple ini: name=0/1 per line
+    while (std::getline(ifs, line))
+    {
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 1);
+        bool on = (val == "1" || val == "true" || val == "True");
+        for (auto& f : features)
+        {
+            if (f.name == key) { f.enabled = on; break; }
+        }
+    }
+}
+
+void FeatureManager::SaveState() const
+{
+    const auto path = GetConfigPath();
+    std::ofstream ofs(path.string(), std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!ofs) return;
+    for (const auto& f : features)
+    {
+        ofs << f.name << '=' << (f.enabled ? '1' : '0') << '\n';
+    }
 }
