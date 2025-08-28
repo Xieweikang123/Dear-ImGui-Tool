@@ -9,8 +9,14 @@
 #include <ctime>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#ifndef NOMINMAX
+#define NOMINMAX
 #endif
+#include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "Dwmapi.lib")
+#endif
+#include <algorithm>
 
 namespace WordReminder
 {
@@ -207,12 +213,45 @@ namespace WordReminder
         return wide;
     }
 
+    // 读取系统是否为暗色主题
+    static bool IsSystemDarkMode()
+    {
+        HKEY key;
+        DWORD value = 1; // 默认浅色
+        DWORD size = sizeof(DWORD);
+        if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                          0, KEY_READ, &key) == ERROR_SUCCESS)
+        {
+            RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr, reinterpret_cast<LPBYTE>(&value), &size);
+            RegCloseKey(key);
+        }
+        return value == 0; // 0 表示暗色
+    }
+
+    // 为窗口应用 DWM 视觉效果（暗色、圆角）
+    static void ApplyDwmWindowAttributes(HWND hwnd, bool useDark)
+    {
+        // 暗色标题栏
+        BOOL dark = useDark ? TRUE : FALSE;
+        const DWORD DWMWA_USE_IMMERSIVE_DARK_MODE = 20u; // 在较新SDK里有定义，这里直接使用常量
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+
+        // 圆角
+        const DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33u;
+        enum DwmWindowCornerPreference { DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWCP_ROUND = 2, DWMWCP_ROUNDSMALL = 3 };
+        DwmWindowCornerPreference pref = DWMWCP_ROUND;
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
+    }
+
     // 右上角自定义置顶弹窗
     static HWND g_reminderHwnd = nullptr;
     static std::wstring g_reminderText;
     static HFONT g_fontTitle = nullptr;
     static HFONT g_fontText = nullptr;
     static HFONT g_fontButton = nullptr;
+    static bool g_darkMode = false;
+    static BYTE g_animOpacity = 0; // 0-255，用于淡入
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
 
@@ -261,9 +300,9 @@ namespace WordReminder
     static void LayoutButtons(HWND hwnd)
     {
         RECT rc; GetClientRect(hwnd, &rc);
-        int w1 = max(110, IdealButtonWidth(L"标记已复习"));
-        int w2 = max(110, IdealButtonWidth(L"稍后提醒"));
-        int w3 = max(110, IdealButtonWidth(L"关闭"));
+        int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
+        int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
+        int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
         int btnHeight = 34, gap = 12;
         int totalWidth = w1 + w2 + w3 + gap * 2;
         int startX = rc.right - totalWidth - 16;
@@ -316,6 +355,15 @@ namespace WordReminder
                 if (b3) SendMessageW(b3, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
                 LayoutButtons(hwnd);
                 SetTimer(hwnd, 1, 15000, nullptr); // 15秒自动关闭
+
+                // 应用系统主题及DWM效果
+                g_darkMode = IsSystemDarkMode();
+                ApplyDwmWindowAttributes(hwnd, g_darkMode);
+
+                // 初始透明并淡入
+                g_animOpacity = 0;
+                SetLayeredWindowAttributes(hwnd, 0, g_animOpacity, LWA_ALPHA);
+                SetTimer(hwnd, 2, 15, nullptr); // 每15ms 提升透明度
                 return 0;
             }
             case WM_SIZE:
@@ -354,25 +402,43 @@ namespace WordReminder
                 HDC hdc = BeginPaint(hwnd, &ps);
                 RECT rc;
                 GetClientRect(hwnd, &rc);
-                HBRUSH bgWnd = CreateSolidBrush(RGB(248, 249, 251));
+                // 背景
+                COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(248, 249, 251);
+                HBRUSH bgWnd = CreateSolidBrush(clrWnd);
                 FillRect(hdc, &rc, bgWnd);
                 DeleteObject(bgWnd);
 
+                // 内容卡片
                 RECT content = { rc.left + 16, rc.top + 16, rc.right - 16, rc.bottom - 64 };
-                HBRUSH bg = CreateSolidBrush(RGB(45, 140, 255));
-                HPEN pen = CreatePen(PS_SOLID, 1, RGB(30, 118, 224));
-                HGDIOBJ oldPen = SelectObject(hdc, pen);
-                HGDIOBJ oldBrush = SelectObject(hdc, bg);
-                RoundRect(hdc, content.left, content.top, content.right, content.bottom, 8, 8);
+                COLORREF clrCard = g_darkMode ? RGB(43, 43, 48) : RGB(255, 255, 255);
+                COLORREF clrBorder = g_darkMode ? RGB(64, 64, 72) : RGB(230, 234, 238);
+                HBRUSH brCard = CreateSolidBrush(clrCard);
+                HPEN pnCard = CreatePen(PS_SOLID, 1, clrBorder);
+                HGDIOBJ oldPen = SelectObject(hdc, pnCard);
+                HGDIOBJ oldBrush = SelectObject(hdc, brCard);
+                RoundRect(hdc, content.left, content.top, content.right, content.bottom, 10, 10);
                 SelectObject(hdc, oldBrush);
                 SelectObject(hdc, oldPen);
-                DeleteObject(bg);
-                DeleteObject(pen);
+                DeleteObject(brCard);
+                DeleteObject(pnCard);
 
+                // 左侧色条强调
+                HBRUSH brAccent = CreateSolidBrush(RGB(45, 140, 255));
+                RECT accent = { content.left, content.top, content.left + 4, content.bottom };
+                FillRect(hdc, &accent, brAccent);
+                DeleteObject(brAccent);
+
+                // 标题
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, RGB(255, 255, 255));
+                SetTextColor(hdc, g_darkMode ? RGB(240, 240, 240) : RGB(28, 28, 30));
+                if (g_fontTitle) SelectObject(hdc, g_fontTitle);
+                RECT titleRc = { content.left + 12, content.top + 10, content.right - 12, content.top + 40 };
+                DrawTextW(hdc, L"提醒", -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                // 正文
                 if (g_fontText) SelectObject(hdc, g_fontText);
-                RECT textRc = { content.left + 12, content.top + 12, content.right - 12, content.bottom - 12 };
+                SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
+                RECT textRc = { content.left + 12, content.top + 44, content.right - 12, content.bottom - 12 };
                 DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 EndPaint(hwnd, &ps);
@@ -383,19 +449,27 @@ namespace WordReminder
                 LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
                 if (!dis) break;
                 bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-                COLORREF fill = pressed ? RGB(29, 112, 214) : RGB(45, 140, 255);
-                COLORREF border = RGB(30, 118, 224);
+
+                // 主要按钮（标记已复习）使用实心蓝色，其余为浅色填充+边框
+                bool isPrimary = (GetDlgCtrlID(dis->hwndItem) == BTN_REVIEWED);
+                COLORREF primary = RGB(45, 140, 255);
+                COLORREF primaryPressed = RGB(29, 112, 214);
+                COLORREF fill = g_darkMode ? RGB(58, 58, 64) : RGB(245, 247, 250);
+                COLORREF border = g_darkMode ? RGB(80, 80, 88) : RGB(220, 224, 228);
+                if (isPrimary) fill = pressed ? primaryPressed : primary;
+
                 HBRUSH b = CreateSolidBrush(fill);
-                HPEN p = CreatePen(PS_SOLID, 1, border);
+                HPEN p = CreatePen(PS_SOLID, 1, isPrimary ? RGB(30, 118, 224) : border);
                 HGDIOBJ oldB = SelectObject(dis->hDC, b);
                 HGDIOBJ oldP = SelectObject(dis->hDC, p);
-                RoundRect(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom, 6, 6);
+                RoundRect(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom, 8, 8);
                 SelectObject(dis->hDC, oldB);
                 SelectObject(dis->hDC, oldP);
                 DeleteObject(b);
                 DeleteObject(p);
                 SetBkMode(dis->hDC, TRANSPARENT);
-                SetTextColor(dis->hDC, RGB(255,255,255));
+                COLORREF txt = isPrimary ? RGB(255,255,255) : (g_darkMode ? RGB(230,230,235) : RGB(40,40,44));
+                SetTextColor(dis->hDC, txt);
                 if (g_fontButton) SelectObject(dis->hDC, g_fontButton);
                 wchar_t buf[128];
                 GetWindowTextW(dis->hwndItem, buf, 128);
@@ -419,6 +493,21 @@ namespace WordReminder
                     KillTimer(hwnd, 1);
                     g_state->showReminderPopup = false;
                     DestroyWindow(hwnd);
+                    return 0;
+                }
+                if (wParam == 2)
+                {
+                    if (g_animOpacity < 250)
+                    {
+                        g_animOpacity = (BYTE)std::min<int>(255, g_animOpacity + 25);
+                        SetLayeredWindowAttributes(hwnd, 0, g_animOpacity, LWA_ALPHA);
+                    }
+                    else
+                    {
+                        g_animOpacity = 255;
+                        SetLayeredWindowAttributes(hwnd, 0, g_animOpacity, LWA_ALPHA);
+                        KillTimer(hwnd, 2);
+                    }
                     return 0;
                 }
                 break;
@@ -463,6 +552,7 @@ namespace WordReminder
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = L"WordReminderPopupWindow";
         wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.style = CS_DROPSHADOW;
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         static ATOM atom = RegisterClassW(&wc);
         (void)atom;
@@ -482,15 +572,15 @@ namespace WordReminder
             if (old) SelectObject(hdc, old);
             ReleaseDC(nullptr, hdc);
         }
-        int width = max(baseWidth, contentSize.cx + 16 + 16 + 24);
-        int height = max(baseHeight, contentSize.cy + 16 + 16 + 64 + 50);
+        int width = std::max<int>(baseWidth, static_cast<int>(contentSize.cx) + 16 + 16 + 24);
+        int height = std::max<int>(baseHeight, static_cast<int>(contentSize.cy) + 16 + 16 + 64 + 50);
 
         // Ensure width fits all buttons
-        int w1 = max(110, IdealButtonWidth(L"标记已复习"));
-        int w2 = max(110, IdealButtonWidth(L"稍后提醒"));
-        int w3 = max(110, IdealButtonWidth(L"关闭"));
+        int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
+        int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
+        int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
         int buttonsTotal = w1 + w2 + w3 + 12 * 2 + 16 + 16; // gaps + side margins
-        width = max(width, buttonsTotal);
+        width = std::max<int>(width, buttonsTotal);
 
         RECT workArea;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
@@ -498,7 +588,7 @@ namespace WordReminder
         int y = workArea.top + 20;
 
         g_reminderHwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
             L"提醒",
             WS_CAPTION | WS_SYSMENU,
@@ -702,61 +792,17 @@ namespace WordReminder
              ImGui::PopStyleVar();
              
              ImGui::Spacing();
-             ImGui::Text("自定义时间:");
-             
-             // 自定义时间输入
-             ImGui::Columns(3, "custom_time");
-             ImGui::SetColumnWidth(0, 80);
-             ImGui::SetColumnWidth(1, 80);
-             ImGui::SetColumnWidth(2, 80);
-             
-             static int hours = 0, minutes = 30, seconds = 0;
-             
-             // 同步显示当前设置的时间
+             ImGui::Text("自定义时间(分钟):");
+             static int minutesOnly = 30;
              if (ImGui::IsWindowAppearing())
              {
-                 hours = g_state->reminderSeconds / 3600;
-                 minutes = (g_state->reminderSeconds % 3600) / 60;
-                 seconds = g_state->reminderSeconds % 60;
+                 minutesOnly = std::max(1, g_state->reminderSeconds / 60);
              }
-             
-             ImGui::Text("时:");
-             ImGui::SameLine();
-             if (ImGui::InputInt("##Hours", &hours, 1, 5, ImGuiInputTextFlags_CharsDecimal))
+             if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
              {
-                 if (hours < 0) hours = 0;
-                 if (hours > 23) hours = 23;
-                 g_state->reminderSeconds = hours * 3600 + minutes * 60 + seconds;
+                 g_state->reminderSeconds = minutesOnly * 60;
              }
-             
-             ImGui::NextColumn();
-             ImGui::Text("分:");
-             ImGui::SameLine();
-             if (ImGui::InputInt("##Minutes", &minutes, 1, 5, ImGuiInputTextFlags_CharsDecimal))
-             {
-                 if (minutes < 0) minutes = 0;
-                 if (minutes > 59) minutes = 59;
-                 g_state->reminderSeconds = hours * 3600 + minutes * 60 + seconds;
-             }
-             
-             ImGui::NextColumn();
-             ImGui::Text("秒:");
-             ImGui::SameLine();
-             if (ImGui::InputInt("##Seconds", &seconds, 1, 5, ImGuiInputTextFlags_CharsDecimal))
-             {
-                 if (seconds < 0) seconds = 0;
-                 if (seconds > 59) seconds = 59;
-                 g_state->reminderSeconds = hours * 3600 + minutes * 60 + seconds;
-             }
-             
              ImGui::Columns(1);
-             
-             // 显示总时间
-             ImGui::Spacing();
-             ImGui::TextDisabled("总计: %d小时%d分钟%d秒", 
-                                g_state->reminderSeconds / 3600,
-                                (g_state->reminderSeconds % 3600) / 60,
-                                g_state->reminderSeconds % 60);
             
             ImGui::Columns(1);
             
