@@ -21,14 +21,14 @@ namespace WordReminder
         char newWord[256] = "";
         char newMeaning[512] = "";
         char newPronunciation[256] = "";
-        int reminderMinutes = 30;
+        int reminderSeconds = 1800; // 默认30分钟
         bool showReminderPopup = false;
         int selectedWordIndex = -1;
         
         // 设置
         bool autoShowReminders = true;
         bool playSoundOnReminder = false;
-        int defaultReminderMinutes = 30;
+        int defaultReminderSeconds = 1800; // 默认30分钟
         
         // 统计
         int totalWords = 0;
@@ -54,22 +54,28 @@ namespace WordReminder
     std::string TimeUntilNow(const std::chrono::system_clock::time_point& time)
     {
         auto now = std::chrono::system_clock::now();
-        auto diff = std::chrono::duration_cast<std::chrono::minutes>(time - now);
+        auto diff = std::chrono::duration_cast<std::chrono::seconds>(time - now);
         
         if (diff.count() < 0)
         {
-            auto seconds = std::chrono::duration_cast<std::chrono::seconds>(time - now);
-            return "已过期 " + std::to_string(-seconds.count() / 60) + " 分钟";
+            return "已过期 " + std::to_string(-diff.count()) + " 秒";
         }
         else if (diff.count() < 60)
         {
-            return std::to_string(diff.count()) + " 分钟后";
+            return std::to_string(diff.count()) + " 秒后";
+        }
+        else if (diff.count() < 3600)
+        {
+            auto minutes = diff.count() / 60;
+            auto seconds = diff.count() % 60;
+            return std::to_string(minutes) + " 分 " + std::to_string(seconds) + " 秒后";
         }
         else
         {
-            auto hours = diff.count() / 60;
-            auto minutes = diff.count() % 60;
-            return std::to_string(hours) + " 小时 " + std::to_string(minutes) + " 分钟后";
+            auto hours = diff.count() / 3600;
+            auto minutes = (diff.count() % 3600) / 60;
+            auto seconds = diff.count() % 60;
+            return std::to_string(hours) + " 小时 " + std::to_string(minutes) + " 分 " + std::to_string(seconds) + " 秒后";
         }
     }
     
@@ -197,14 +203,14 @@ namespace WordReminder
         }
     }
     
-    void AddWord(const std::string& word, const std::string& meaning, int minutesFromNow)
+    void AddWord(const std::string& word, const std::string& meaning, int secondsFromNow)
     {
         if (!g_state) return;
         
         WordEntry entry;
         entry.word = word;
         entry.meaning = meaning;
-        entry.remindTime = std::chrono::system_clock::now() + std::chrono::minutes(minutesFromNow);
+        entry.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(secondsFromNow);
         entry.lastReview = std::chrono::system_clock::now();
         
         g_state->words.push_back(entry);
@@ -230,14 +236,14 @@ namespace WordReminder
         entry.lastReview = std::chrono::system_clock::now();
         
         // 根据复习次数调整下次提醒时间
-        int nextMinutes = 30;
-        if (entry.reviewCount == 1) nextMinutes = 60;
-        else if (entry.reviewCount == 2) nextMinutes = 120;
-        else if (entry.reviewCount == 3) nextMinutes = 240;
-        else if (entry.reviewCount == 4) nextMinutes = 480;
-        else if (entry.reviewCount >= 5) nextMinutes = 1440; // 24小时
+        int nextSeconds = 1800; // 30分钟
+        if (entry.reviewCount == 1) nextSeconds = 3600; // 1小时
+        else if (entry.reviewCount == 2) nextSeconds = 7200; // 2小时
+        else if (entry.reviewCount == 3) nextSeconds = 14400; // 4小时
+        else if (entry.reviewCount == 4) nextSeconds = 28800; // 8小时
+        else if (entry.reviewCount >= 5) nextSeconds = 86400; // 24小时
         
-        entry.remindTime = std::chrono::system_clock::now() + std::chrono::minutes(nextMinutes);
+        entry.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(nextSeconds);
         
         SaveWords();
     }
@@ -327,7 +333,16 @@ namespace WordReminder
             ImGui::NextColumn();
             ImGui::Text("提醒时间:");
             ImGui::SameLine();
-            ImGui::SliderInt("##Minutes", &g_state->reminderMinutes, 5, 1440, "%d 分钟后");
+            ImGui::SliderInt("##Seconds", &g_state->reminderSeconds, 10, 86400, "%d 秒后");
+            
+            // 显示更友好的时间格式
+            int minutes = g_state->reminderSeconds / 60;
+            int seconds = g_state->reminderSeconds % 60;
+            if (minutes > 0)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%d分%d秒)", minutes, seconds);
+            }
             
             ImGui::Columns(1);
             
@@ -335,7 +350,7 @@ namespace WordReminder
             {
                 if (strlen(g_state->newWord) > 0 && strlen(g_state->newMeaning) > 0)
                 {
-                    AddWord(g_state->newWord, g_state->newMeaning, g_state->reminderMinutes);
+                    AddWord(g_state->newWord, g_state->newMeaning, g_state->reminderSeconds);
                     
                     // 清空输入
                     memset(g_state->newWord, 0, sizeof(g_state->newWord));

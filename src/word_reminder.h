@@ -39,7 +39,7 @@ namespace WordReminder
     void SetEnabled(bool enabled);
     
     // 添加新单词
-    void AddWord(const std::string& word, const std::string& meaning, int minutesFromNow = 30);
+    void AddWord(const std::string& word, const std::string& meaning, int secondsFromNow = 1800);
     
     // 删除单词
     void RemoveWord(int index);
