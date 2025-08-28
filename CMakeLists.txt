@@ -42,6 +42,8 @@ set(APP_SOURCES
     main.cpp
     src/replace_tool.cpp
     src/vs_inspector.cpp
+    src/feature_manager.cpp
+    src/word_reminder.cpp
 )
 
 # Create executable (use WinMain entry on Windows+D3D11)

@@ -1,6 +1,8 @@
 #include "imgui.h"
 #include "src/replace_tool.h"
 #include "src/vs_inspector.h"
+#include "src/word_reminder.h"
+#include "src/feature_manager.h"
 #include <string>
 #include <vector>
 #include <mutex>
@@ -358,12 +360,34 @@ static void RunReplacement()
 
 static void DrawUI()
 {
-    ReplaceTool::DrawReplaceUI();
+    // Use the feature manager to draw all enabled features
+    FeatureManager::GetInstance().DrawAllFeatures();
+    
+    // Also show the feature manager window
+    static bool showFeatureManager = false;
+    if (ImGui::BeginMainMenuBar())
+    {
+        if (ImGui::BeginMenu("Tools"))
+        {
+            if (ImGui::MenuItem("Feature Manager"))
+            {
+                showFeatureManager = true;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+    
+    if (showFeatureManager)
+    {
+        FeatureManager::GetInstance().DrawFeatureSelector();
+    }
 }
 
 static void DrawVSUI()
 {
-    VSInspector::DrawVSUI();
+    // This function is now handled by the feature manager
+    // Keeping it for backward compatibility
 }
 
 #ifdef IMGUI_USE_D3D11
@@ -525,6 +549,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     // Setup Platform/Renderer bindings
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+
+    // Initialize feature manager and all features
+    FeatureManager::GetInstance().Initialize();
 
     // Font loading and verbose logging (D3D11 path)
     {
@@ -702,6 +729,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
         DrawUI();
         DrawVSUI();
+        
+        // 检查单词提醒
+        if (WordReminder::HasReminderToShow())
+        {
+            // 这里可以添加声音提醒或其他提醒方式
+            // 目前会在UI中显示弹窗
+        }
 
         ImGui::Render();
         const float clear_color_with_alpha[4] = { 0.45f, 0.55f, 0.60f, 1.00f };
@@ -712,6 +746,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
 
     // Cleanup
+    FeatureManager::GetInstance().Cleanup();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -800,6 +835,9 @@ int main(int, char**)
 #else
     ImGui_ImplOpenGL3_Init(glsl_version);
 #endif
+
+    // Initialize feature manager and all features
+    FeatureManager::GetInstance().Initialize();
 
     // 改进的字体加载策略
     ImFont* defaultFont = io.Fonts->AddFontDefault();
@@ -937,6 +975,13 @@ int main(int, char**)
 
         DrawUI();
         DrawVSUI();
+        
+        // 检查单词提醒
+        if (WordReminder::HasReminderToShow())
+        {
+            // 这里可以添加声音提醒或其他提醒方式
+            // 目前会在UI中显示弹窗
+        }
 
         ImGui::Render();
         int display_w, display_h; glfwGetFramebufferSize(window, &display_w, &display_h);
@@ -951,6 +996,7 @@ int main(int, char**)
         glfwSwapBuffers(window);
     }
 
+    FeatureManager::GetInstance().Cleanup();
 #ifdef IMGUI_USE_OPENGL2
     ImGui_ImplOpenGL2_Shutdown();
 #else
