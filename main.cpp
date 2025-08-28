@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <objbase.h>
 #include <oleauto.h>
+#include <shellapi.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -499,6 +500,54 @@ static void ResizeSwapChain(HWND hWnd)
 
 // Win32 message handler
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+// ---- Tray icon support ----
+static UINT WM_TRAYICON = WM_APP + 1;
+static const UINT TRAY_ICON_ID = 1;
+static const UINT ID_TRAY_SHOW = 10001;
+static const UINT ID_TRAY_EXIT = 10002;
+static NOTIFYICONDATA nid = {};
+
+static void AddTrayIcon(HWND hWnd)
+{
+    if (nid.cbSize != 0) return;
+    nid.cbSize = sizeof(NOTIFYICONDATA);
+    nid.hWnd = hWnd;
+    nid.uID = TRAY_ICON_ID;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    lstrcpyn(nid.szTip, TEXT("单词学习提醒"), ARRAYSIZE(nid.szTip));
+    Shell_NotifyIcon(NIM_ADD, &nid);
+}
+
+static void RemoveTrayIcon()
+{
+    if (nid.cbSize == 0) return;
+    Shell_NotifyIcon(NIM_DELETE, &nid);
+    ZeroMemory(&nid, sizeof(nid));
+}
+
+static void ShowTrayMenu(HWND hWnd)
+{
+    POINT pt; GetCursorPos(&pt);
+    HMENU menu = CreatePopupMenu();
+    AppendMenu(menu, MF_STRING, ID_TRAY_SHOW, TEXT("显示窗口"));
+    AppendMenu(menu, MF_STRING, ID_TRAY_EXIT, TEXT("退出"));
+    SetForegroundWindow(hWnd);
+    UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_RIGHTALIGN, pt.x, pt.y, 0, hWnd, NULL);
+    DestroyMenu(menu);
+    if (cmd == ID_TRAY_SHOW)
+    {
+        ShowWindow(hWnd, SW_SHOW);
+        SetForegroundWindow(hWnd);
+        RemoveTrayIcon();
+    }
+    else if (cmd == ID_TRAY_EXIT)
+    {
+        RemoveTrayIcon();
+        PostMessage(hWnd, WM_CLOSE, 0, 0);
+    }
+}
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
@@ -513,8 +562,29 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SYSCOMMAND:
         if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
             return 0;
+        if ((wParam & 0xfff0) == SC_CLOSE)
+        {
+            ShowWindow(hWnd, SW_HIDE);
+            AddTrayIcon(hWnd);
+            return 0;
+        }
+        break;
+    case WM_APP+1: // WM_TRAYICON
+        if (lParam == WM_LBUTTONDBLCLK)
+        {
+            ShowWindow(hWnd, SW_SHOW);
+            SetForegroundWindow(hWnd);
+            RemoveTrayIcon();
+            return 0;
+        }
+        else if (lParam == WM_RBUTTONUP)
+        {
+            ShowTrayMenu(hWnd);
+            return 0;
+        }
         break;
     case WM_DESTROY:
+        RemoveTrayIcon();
         PostQuitMessage(0);
         return 0;
     }
