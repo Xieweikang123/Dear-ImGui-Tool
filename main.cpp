@@ -615,6 +615,14 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam != SIZE_MINIMIZED)
             ResizeSwapChain(hWnd);
         return 0;
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE)
+        {
+            ShowWindow(hWnd, SW_HIDE);
+            AddTrayIcon(hWnd);
+            return 0;
+        }
+        break;
     case WM_SYSCOMMAND:
         if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu
             return 0;
@@ -654,8 +662,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
     RegisterClassEx(&wc);
     g_appIcon = CreateAppIcon();
-    wc.hIcon = wc.hIconSm = g_appIcon ? g_appIcon : wc.hIcon;
     HWND hwnd = CreateWindow(wc.lpszClassName, _T("Dear ImGui Minimal Example (D3D11)"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 720, NULL, NULL, wc.hInstance, NULL);
+    if (g_appIcon && hwnd)
+    {
+        SendMessage(hwnd, WM_SETICON, ICON_BIG,   (LPARAM)g_appIcon);
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_appIcon);
+    }
 
     // Initialize D3D
     if (!CreateDeviceD3D(hwnd))
