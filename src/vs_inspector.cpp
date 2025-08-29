@@ -87,7 +87,7 @@ namespace VSInspector
     // 启动动画相关变量
     static bool g_showStartupAnimation = true;
     static float g_startupAnimationTime = 0.0f;
-    static const float g_startupAnimationDuration = 2.0f; // 2秒动画时长
+    static const float g_startupAnimationDuration = 3.0f; // 3秒动画时长，增加科技感
     static int g_startupAnimationStep = 0;
     static const char* g_startupAnimationTexts[] = {
         "🚀 正在启动开发环境管理器...",
@@ -95,6 +95,13 @@ namespace VSInspector
         "⚙️ 加载配置信息...",
         "✨ 准备就绪！"
     };
+    
+    // 科技感动画变量
+    static float g_scanLineY = 0.0f;
+    static float g_particleTime = 0.0f;
+    static float g_dataStreamTime = 0.0f;
+    static float g_glitchTime = 0.0f;
+    static int g_glitchCounter = 0;
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -1596,44 +1603,174 @@ namespace VSInspector
             float elapsed = currentTime - g_startupAnimationTime;
             float progress = elapsed / g_startupAnimationDuration;
             
+            // 更新科技感动画时间
+            g_particleTime += ImGui::GetIO().DeltaTime * 3.0f;
+            g_dataStreamTime += ImGui::GetIO().DeltaTime * 2.0f;
+            g_glitchTime += ImGui::GetIO().DeltaTime * 1.5f;
+            g_scanLineY += ImGui::GetIO().DeltaTime * 100.0f;
+            
+            // 获取窗口尺寸
+            ImVec2 windowSize = ImGui::GetWindowSize();
+            ImVec2 windowPos = ImGui::GetWindowPos();
+            
+            // 绘制背景网格效果
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+            
+            // 绘制扫描线效果
+            float scanLineY = fmodf(g_scanLineY, windowSize.y);
+            drawList->AddLine(
+                ImVec2(canvasPos.x, canvasPos.y + scanLineY),
+                ImVec2(canvasPos.x + windowSize.x, canvasPos.y + scanLineY),
+                IM_COL32(0, 255, 0, 50),
+                2.0f
+            );
+            
+            // 绘制粒子效果
+            for (int i = 0; i < 20; i++)
+            {
+                float x = fmodf(g_particleTime * 50.0f + i * 37.0f, windowSize.x);
+                float y = fmodf(g_particleTime * 30.0f + i * 23.0f, windowSize.y);
+                float alpha = 0.3f + 0.4f * sinf(g_particleTime + i);
+                drawList->AddCircleFilled(
+                    ImVec2(canvasPos.x + x, canvasPos.y + y),
+                    2.0f,
+                    IM_COL32(0, 255, 0, (int)(alpha * 255))
+                );
+            }
+            
+            // 绘制数据流动画
+            for (int i = 0; i < 5; i++)
+            {
+                float x = fmodf(g_dataStreamTime * 100.0f + i * 200.0f, windowSize.x);
+                float y = fmodf(g_dataStreamTime * 50.0f + i * 100.0f, windowSize.y);
+                drawList->AddText(
+                    ImVec2(canvasPos.x + x, canvasPos.y + y),
+                    IM_COL32(0, 255, 0, 100),
+                    "01"
+                );
+            }
+            
             // 居中显示启动动画
             ImGui::SetCursorPosY(ImGui::GetWindowHeight() * 0.4f);
             
-            // 显示动画文本
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.8f, 0.2f, 1.0f));
+            // 添加故障效果
+            if (g_glitchTime > 0.5f && g_glitchCounter < 3)
+            {
+                g_glitchTime = 0.0f;
+                g_glitchCounter++;
+                // 随机偏移文本位置
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (rand() % 10 - 5));
+            }
+            
+            // 显示动画文本（带科技感样式）
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // 使用默认字体
             ImGui::TextWrapped("%s", g_startupAnimationTexts[g_startupAnimationStep]);
+            ImGui::PopFont();
             ImGui::PopStyleColor();
             
             ImGui::Spacing();
             
-            // 显示进度条
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.2f, 0.8f, 0.2f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
-            ImGui::ProgressBar(progress, ImVec2(-1, 20), "");
+            // 显示科技感进度条
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
+            ImGui::ProgressBar(progress, ImVec2(-1, 25), "");
             ImGui::PopStyleColor();
             ImGui::PopStyleColor();
+            
+            // 添加进度条发光效果
+            float glowAlpha = 0.3f + 0.2f * sinf(g_particleTime * 2.0f);
+            drawList->AddRect(
+                ImVec2(canvasPos.x + 10, canvasPos.y + ImGui::GetWindowHeight() * 0.4f + 60),
+                ImVec2(canvasPos.x + windowSize.x - 10, canvasPos.y + ImGui::GetWindowHeight() * 0.4f + 85),
+                IM_COL32(0, 255, 0, (int)(glowAlpha * 255)),
+                5.0f,
+                0,
+                2.0f
+            );
             
             ImGui::Spacing();
             
-            // 显示进度百分比
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%.0f%%", progress * 100.0f);
+            // 显示进度百分比（带科技感）
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "[SYSTEM] %.0f%% COMPLETE", progress * 100.0f);
+            
+            // 添加系统状态信息
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "STATUS: INITIALIZING");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "MEMORY: OK");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "NETWORK: STABLE");
             
             // 添加一些装饰性的动画效果
             static float pulseTime = 0.0f;
-            pulseTime += ImGui::GetIO().DeltaTime * 2.0f;
-            float pulseAlpha = 0.5f + 0.3f * sinf(pulseTime);
+            pulseTime += ImGui::GetIO().DeltaTime * 3.0f;
+            float pulseAlpha = 0.5f + 0.4f * sinf(pulseTime);
             
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 20);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.2f, pulseAlpha));
-            ImGui::Text("请稍候...");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, pulseAlpha));
+            ImGui::Text("SYSTEM READY IN %.1f SECONDS", (1.0f - progress) * g_startupAnimationDuration);
             ImGui::PopStyleColor();
             
             ImGui::End(); // 正确结束窗口
             return; // 动画期间不显示其他内容
         }
         
+        // 主界面科技感背景动画
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+        ImVec2 windowSize = ImGui::GetWindowSize();
+        
+        // 更新动画时间
+        static float mainUIParticleTime = 0.0f;
+        static float mainUIScanTime = 0.0f;
+        static float mainUIDataTime = 0.0f;
+        mainUIParticleTime += ImGui::GetIO().DeltaTime * 2.0f;
+        mainUIScanTime += ImGui::GetIO().DeltaTime * 50.0f;
+        mainUIDataTime += ImGui::GetIO().DeltaTime * 1.5f;
+        
+        // 绘制背景网格效果
+        for (int i = 0; i < 20; i++)
+        {
+            float x = fmodf(mainUIParticleTime * 30.0f + i * 50.0f, windowSize.x);
+            float y = fmodf(mainUIParticleTime * 20.0f + i * 30.0f, windowSize.y);
+            float alpha = 0.1f + 0.05f * sinf(mainUIParticleTime + i);
+            drawList->AddCircleFilled(
+                ImVec2(canvasPos.x + x, canvasPos.y + y),
+                1.0f,
+                IM_COL32(0, 255, 0, (int)(alpha * 255))
+            );
+        }
+        
+        // 绘制角落装饰
+        float cornerSize = 20.0f;
+        float cornerAlpha = 0.3f + 0.2f * sinf(mainUIParticleTime * 2.0f);
+        
+        // 左上角
+        drawList->AddLine(ImVec2(canvasPos.x, canvasPos.y), ImVec2(canvasPos.x + cornerSize, canvasPos.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        drawList->AddLine(ImVec2(canvasPos.x, canvasPos.y), ImVec2(canvasPos.x, canvasPos.y + cornerSize), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        
+        // 右上角
+        drawList->AddLine(ImVec2(canvasPos.x + windowSize.x - cornerSize, canvasPos.y), ImVec2(canvasPos.x + windowSize.x, canvasPos.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        drawList->AddLine(ImVec2(canvasPos.x + windowSize.x, canvasPos.y), ImVec2(canvasPos.x + windowSize.x, canvasPos.y + cornerSize), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        
+        // 左下角
+        drawList->AddLine(ImVec2(canvasPos.x, canvasPos.y + windowSize.y - cornerSize), ImVec2(canvasPos.x, canvasPos.y + windowSize.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        drawList->AddLine(ImVec2(canvasPos.x, canvasPos.y + windowSize.y), ImVec2(canvasPos.x + cornerSize, canvasPos.y + windowSize.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        
+        // 右下角
+        drawList->AddLine(ImVec2(canvasPos.x + windowSize.x - cornerSize, canvasPos.y + windowSize.y), ImVec2(canvasPos.x + windowSize.x, canvasPos.y + windowSize.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        drawList->AddLine(ImVec2(canvasPos.x + windowSize.x, canvasPos.y + windowSize.y - cornerSize), ImVec2(canvasPos.x + windowSize.x, canvasPos.y + windowSize.y), 
+                         IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
+        
         // Header with refresh controls
-        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor & Feishu Manager 😊");
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "🚀 VS & Cursor & Feishu Manager v2.0 😊");
         ImGui::SameLine();
         if (ImGui::Button("[Refresh]"))
         {
@@ -1672,7 +1809,17 @@ namespace VSInspector
         }
         
         // Left column: Running Instances
-        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Running Instances]");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+        ImGui::Text("🔍 [SYSTEM MONITOR]");
+        ImGui::PopStyleColor();
+        
+        // 添加系统状态指示器
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20);
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "ONLINE");
+        
         ImGui::Separator();
         
         std::vector<VSInstance> local;
@@ -1879,7 +2026,17 @@ namespace VSInspector
         
         // Middle/Right column: Current Status & Quick Actions
         ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Current Status & Actions]");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+        ImGui::Text("⚡ [CONTROL CENTER]");
+        ImGui::PopStyleColor();
+        
+        // 添加控制中心状态指示器
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20);
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "READY");
+        
         ImGui::Separator();
         
         // Current Status
@@ -1965,7 +2122,17 @@ namespace VSInspector
          if (useWideLayout)
          {
              ImGui::NextColumn();
-             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
+             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+             ImGui::Text("💾 [DATA MANAGEMENT]");
+             ImGui::PopStyleColor();
+             
+             // 添加数据管理状态指示器
+             ImGui::SameLine();
+             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 20);
+             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+             ImGui::SameLine();
+             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "SYNC");
+             
              ImGui::Separator();
              
              // Save/Update configuration
@@ -2325,6 +2492,39 @@ namespace VSInspector
                 ImGui::EndPopup();
             }
         }
+        
+        // 科技感状态栏
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        // 底部状态栏
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
+        ImGui::BeginChild("StatusBar", ImVec2(0, 30), true);
+        
+        // 左侧：系统状态
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "SYSTEM:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "ONLINE");
+        
+        // 中间：时间显示
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.3f);
+        time_t now = time(nullptr);
+        struct tm* timeinfo = localtime(&now);
+        char timeStr[64];
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "TIME: %s", timeStr);
+        
+        // 右侧：应用统计
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.7f);
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "VS: %d | Cursor: %d | Configs: %d", 
+                          (int)local.size(), (int)localCursor.size(), (int)g_savedConfigs.size());
+        
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
         
         // Log section (collapsible)
         if (ImGui::CollapsingHeader("[Debug Log]", ImGuiTreeNodeFlags_DefaultOpen))
