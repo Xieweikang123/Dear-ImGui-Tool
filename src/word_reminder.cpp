@@ -261,8 +261,11 @@ namespace WordReminder
     // 右上角自定义置顶弹窗
     static HWND g_reminderHwnd = nullptr;
     static std::wstring g_reminderText;
+    static std::vector<std::wstring> g_wordList;  // 存储单词列表
+    static std::vector<std::wstring> g_meaningList;  // 存储释义列表
     static HFONT g_fontTitle = nullptr;
     static HFONT g_fontText = nullptr;
+    static HFONT g_fontWord = nullptr;  // 专门用于单词的字体
     static HFONT g_fontButton = nullptr;
     static bool g_darkMode = false;
     static BYTE g_animOpacity = 0; // 0-255，用于淡入
@@ -395,6 +398,12 @@ namespace WordReminder
                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
+                if (!g_fontWord)
+                {
+                    g_fontWord = CreateFontW((int)(24 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                }
                 if (!g_fontButton)
                 {
                     g_fontButton = CreateFontW((int)(15 * s), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -501,13 +510,22 @@ namespace WordReminder
                 SetTextColor(hdc, g_darkMode ? RGB(240, 240, 240) : RGB(28, 28, 30));
                 if (g_fontTitle) SelectObject(hdc, g_fontTitle);
                 RECT titleRc = { content.left + 10, content.top + 8, content.right - 10, content.top + 36 };
-                DrawTextW(hdc, L"提醒", -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                // DrawTextW(hdc, L"提醒", -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 正文
+                // 正文 - 分别绘制单词和释义
+                int yOffset = content.top + 40;
+                
+                // 绘制单词（使用大字体）
+                if (g_fontWord) SelectObject(hdc, g_fontWord);
+                SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
+                RECT wordRc = { content.left + 10, yOffset, content.right - 10, yOffset + 50 };
+                DrawTextW(hdc, L"📖 formal decision", -1, &wordRc, DT_LEFT | DT_TOP | DT_SINGLELINE);
+                
+                // 绘制释义（使用小字体）
                 if (g_fontText) SelectObject(hdc, g_fontText);
                 SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                RECT textRc = { content.left + 10, content.top + 40, content.right - 10, content.bottom - 10 };
-                DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                RECT meaningRc = { content.left + 10, yOffset + 50, content.right - 10, content.bottom - 10 };
+                DrawTextW(hdc, L"    A formal decision is a choice or resolution that is made in a serious, structured way, following specific rules and procedures. It's not just a casual thought or a quick choice; it's an official and binding conclusion.", -1, &meaningRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 EndPaint(hwnd, &ps);
                 return 0;
@@ -623,6 +641,7 @@ namespace WordReminder
                 if (hwnd == g_reminderHwnd) g_reminderHwnd = nullptr;
                 if (g_fontTitle) { DeleteObject(g_fontTitle); g_fontTitle = nullptr; }
                 if (g_fontText) { DeleteObject(g_fontText); g_fontText = nullptr; }
+        if (g_fontWord) { DeleteObject(g_fontWord); g_fontWord = nullptr; }
                 if (g_fontButton) { DeleteObject(g_fontButton); g_fontButton = nullptr; }
                 if (g_btnBgBrush) { DeleteObject(g_btnBgBrush); g_btnBgBrush = nullptr; }
                 return 0;
@@ -949,7 +968,7 @@ namespace WordReminder
                     if (isDue)
                     {
                         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-                        ImGui::Text("⚠️ 需要复习");
+                        ImGui::Text("需要复习");
                         ImGui::PopStyleColor();
                     }
                     
