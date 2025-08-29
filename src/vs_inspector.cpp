@@ -1380,7 +1380,11 @@ namespace VSInspector
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             g_vsList.swap(found);
             g_cursorList.swap(foundCursor);
-            g_feishuPath = foundFeishuPath;
+            // 只有在检测到飞书运行时才更新路径，避免覆盖已保存的路径
+            if (foundFeishuRunning)
+            {
+                g_feishuPath = foundFeishuPath;
+            }
             g_feishuRunning = foundFeishuRunning;
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
