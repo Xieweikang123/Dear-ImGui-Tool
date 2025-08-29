@@ -678,6 +678,32 @@ static void ShowTrayMenu(HWND hWnd)
     }
     else if (cmd == ID_TRAY_EXIT)
     {
+        // 在真正退出前保存窗口大小
+        RECT rect;
+        if (GetWindowRect(hWnd, &rect)) {
+            int width = rect.right - rect.left;
+            int height = rect.bottom - rect.top;
+            int x = rect.left;
+            int y = rect.top;
+            
+            AppendLog("[window] Exiting application, current size: " + std::to_string(width) + "x" + std::to_string(height) + " at " + std::to_string(x) + "," + std::to_string(y));
+            
+            if (width > 0 && height > 0 && width < 10000 && height < 10000) {
+                std::ofstream configFile("window_config.txt");
+                if (configFile.is_open()) {
+                    configFile << width << " " << height << " " << x << " " << y;
+                    configFile.close();
+                    AppendLog("[window] Window config saved to window_config.txt (exit)");
+                } else {
+                    AppendLog("[window] Failed to save window config (exit)");
+                }
+            } else {
+                AppendLog("[window] Invalid window size detected, skipping save (exit): " + std::to_string(width) + "x" + std::to_string(height));
+            }
+        } else {
+            AppendLog("[window] Failed to get window rect, skipping save (exit)");
+        }
+        
         RemoveTrayIcon();
         PostMessage(hWnd, WM_CLOSE, 0, 0);
     }
@@ -706,6 +732,32 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         if ((wParam & 0xfff0) == SC_CLOSE)
         {
+            // 在隐藏窗口前保存窗口大小
+            RECT rect;
+            if (GetWindowRect(hWnd, &rect)) {
+                int width = rect.right - rect.left;
+                int height = rect.bottom - rect.top;
+                int x = rect.left;
+                int y = rect.top;
+                
+                AppendLog("[window] Closing window, current size: " + std::to_string(width) + "x" + std::to_string(height) + " at " + std::to_string(x) + "," + std::to_string(y));
+                
+                if (width > 0 && height > 0 && width < 10000 && height < 10000) {
+                    std::ofstream configFile("window_config.txt");
+                    if (configFile.is_open()) {
+                        configFile << width << " " << height << " " << x << " " << y;
+                        configFile.close();
+                        AppendLog("[window] Window config saved to window_config.txt");
+                    } else {
+                        AppendLog("[window] Failed to save window config");
+                    }
+                } else {
+                    AppendLog("[window] Invalid window size detected, skipping save: " + std::to_string(width) + "x" + std::to_string(height));
+                }
+            } else {
+                AppendLog("[window] Failed to get window rect, skipping save");
+            }
+            
             ShowWindow(hWnd, SW_HIDE);
             AddTrayIcon(hWnd);
             return 0;
@@ -756,6 +808,27 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
+    
+    // 记录当前窗口大小
+    RECT rect;
+    GetWindowRect(hwnd, &rect);
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+    AppendLog("[window] Initial window size: " + std::to_string(width) + "x" + std::to_string(height));
+    
+    // 尝试从配置文件恢复窗口大小
+    std::ifstream winConfigFile("window_config.txt");
+    if (winConfigFile.is_open()) {
+        int savedWidth, savedHeight, savedX, savedY;
+        if (winConfigFile >> savedWidth >> savedHeight >> savedX >> savedY) {
+            AppendLog("[window] Restoring window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+            SetWindowPos(hwnd, NULL, savedX, savedY, savedWidth, savedHeight, SWP_NOZORDER);
+        }
+        winConfigFile.close();
+    } else {
+        AppendLog("[window] No saved window config found, using default size");
+    }
+    
     // Keep tray icon persistent regardless of window visibility
     AddTrayIcon(hwnd);
 
@@ -767,6 +840,23 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     // 启用窗口大小和位置保存功能
     io.IniFilename = "imgui.ini";
+    AppendLog("[window] Setting IniFilename to: imgui.ini");
+    
+    // 检查imgui.ini文件是否存在
+    if (fs::exists("imgui.ini")) {
+        AppendLog("[window] imgui.ini file exists");
+        std::ifstream iniFile("imgui.ini");
+        std::string line;
+        while (std::getline(iniFile, line)) {
+            if (line.find("[Window]") != std::string::npos) {
+                AppendLog("[window] Found window config: " + line);
+            }
+        }
+        iniFile.close();
+    } else {
+        AppendLog("[window] imgui.ini file does not exist");
+    }
+    
     ImGui::StyleColorsDark();
     const float dpiScale = GetDpiScaleForWindow(hwnd);
     ImGui::GetStyle().ScaleAllSizes(dpiScale);
@@ -975,9 +1065,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         g_pSwapChain->Present(1, 0);
     }
 
+    // 窗口大小已经在隐藏时保存，这里不需要重复保存
+    
     // Cleanup
     FeatureManager::GetInstance().Cleanup();
+    
     // 保存ImGui设置到ini文件
+    AppendLog("[window] Saving ImGui settings to imgui.ini");
     ImGui::SaveIniSettingsToDisk("imgui.ini");
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -1033,6 +1127,25 @@ int main(int, char**)
         return 1;
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
+    
+    // 记录当前窗口大小
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
+    AppendLog("[window] Initial GLFW window size: " + std::to_string(width) + "x" + std::to_string(height));
+    
+    // 尝试从配置文件恢复窗口大小
+    std::ifstream glfwConfigFile("window_config.txt");
+    if (glfwConfigFile.is_open()) {
+        int savedWidth, savedHeight, savedX, savedY;
+        if (glfwConfigFile >> savedWidth >> savedHeight >> savedX >> savedY) {
+            AppendLog("[window] Restoring GLFW window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+            glfwSetWindowSize(window, savedWidth, savedHeight);
+            glfwSetWindowPos(window, savedX, savedY);
+        }
+        glfwConfigFile.close();
+    } else {
+        AppendLog("[window] No saved GLFW window config found, using default size");
+    }
 
     // Log backend and GL info
     {
@@ -1061,6 +1174,23 @@ int main(int, char**)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     // 启用窗口大小和位置保存功能
     io.IniFilename = "imgui.ini";
+    AppendLog("[window] Setting IniFilename to: imgui.ini (GLFW)");
+    
+    // 检查imgui.ini文件是否存在
+    if (fs::exists("imgui.ini")) {
+        AppendLog("[window] imgui.ini file exists (GLFW)");
+        std::ifstream iniFile("imgui.ini");
+        std::string line;
+        while (std::getline(iniFile, line)) {
+            if (line.find("[Window]") != std::string::npos) {
+                AppendLog("[window] Found window config (GLFW): " + line);
+            }
+        }
+        iniFile.close();
+    } else {
+        AppendLog("[window] imgui.ini file does not exist (GLFW)");
+    }
+    
     ImGui::StyleColorsDark();
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -1230,8 +1360,32 @@ int main(int, char**)
         glfwSwapBuffers(window);
     }
 
+    // 保存当前窗口大小和位置（在清理之前）
+    int finalWidth, finalHeight;
+    glfwGetWindowSize(window, &finalWidth, &finalHeight);
+    int finalX, finalY;
+    glfwGetWindowPos(window, &finalX, &finalY);
+    
+    // 验证窗口大小的合理性
+    if (finalWidth > 0 && finalHeight > 0 && finalWidth < 10000 && finalHeight < 10000) {
+        AppendLog("[window] Saving GLFW window size: " + std::to_string(finalWidth) + "x" + std::to_string(finalHeight) + " at " + std::to_string(finalX) + "," + std::to_string(finalY));
+        
+        std::ofstream glfwConfigFileOut("window_config.txt");
+        if (glfwConfigFileOut.is_open()) {
+            glfwConfigFileOut << finalWidth << " " << finalHeight << " " << finalX << " " << finalY;
+            glfwConfigFileOut.close();
+            AppendLog("[window] GLFW window config saved to window_config.txt");
+        } else {
+            AppendLog("[window] Failed to save GLFW window config");
+        }
+    } else {
+        AppendLog("[window] Invalid GLFW window size detected, skipping save: " + std::to_string(finalWidth) + "x" + std::to_string(finalHeight));
+    }
+    
     FeatureManager::GetInstance().Cleanup();
+    
     // 保存ImGui设置到ini文件
+    AppendLog("[window] Saving ImGui settings to imgui.ini (GLFW)");
     ImGui::SaveIniSettingsToDisk("imgui.ini");
 #ifdef IMGUI_USE_OPENGL2
     ImGui_ImplOpenGL2_Shutdown();
