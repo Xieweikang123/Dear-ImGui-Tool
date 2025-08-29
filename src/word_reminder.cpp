@@ -515,11 +515,37 @@ namespace WordReminder
                 // 正文 - 分别绘制单词和释义
                 int yOffset = content.top + 40;
                 
-                // 绘制动态内容
-                if (g_fontText) SelectObject(hdc, g_fontText);
-                SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
-                DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                // 绘制动态内容 - 分别处理单词和释义
+                if (!g_reminderText.empty())
+                {
+                    // 查找第一个换行符来分离单词和释义
+                    size_t firstNewline = g_reminderText.find(L'\n');
+                    if (firstNewline != std::wstring::npos)
+                    {
+                        std::wstring wordText = g_reminderText.substr(0, firstNewline);
+                        std::wstring meaningText = g_reminderText.substr(firstNewline + 1);
+                        
+                        // 绘制单词（使用大字体，更醒目）
+                        if (g_fontWord) SelectObject(hdc, g_fontWord);
+                        SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
+                        RECT wordRc = { content.left + 10, yOffset, content.right - 10, yOffset + 50 };
+                        DrawTextW(hdc, wordText.c_str(), -1, &wordRc, DT_LEFT | DT_TOP | DT_SINGLELINE);
+                        
+                        // 绘制释义（使用小字体）
+                        if (g_fontText) SelectObject(hdc, g_fontText);
+                        SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
+                        RECT meaningRc = { content.left + 10, yOffset + 50, content.right - 10, content.bottom - 10 };
+                        DrawTextW(hdc, meaningText.c_str(), -1, &meaningRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                    }
+                    else
+                    {
+                        // 如果没有换行符，全部用大字体显示
+                        if (g_fontWord) SelectObject(hdc, g_fontWord);
+                        SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
+                        RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
+                        DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                    }
+                }
 
                 EndPaint(hwnd, &ps);
                 return 0;
@@ -651,15 +677,21 @@ namespace WordReminder
         auto dueWords = GetDueWords();
         if (dueWords.empty()) { g_state->showReminderPopup = false; return; }
 
-        std::ostringstream oss;
-        // 只显示正文，不再重复标题“提醒”
-        for (const auto& entry : dueWords)
+        // 只显示第一个需要复习的单词，让单词更醒目
+        if (!dueWords.empty())
         {
-            oss << "📖 " << entry.word << "\n";
-            if (!entry.pronunciation.empty()) oss << "    [" << entry.pronunciation << "]\n";
-            oss << "    " << entry.meaning << "\n\n";
+            const auto& entry = dueWords[0];
+            std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
+            std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
+            
+            // 如果有多个单词，在释义后面添加提示
+            if (dueWords.size() > 1)
+            {
+                meaningText += L"\n\n    还有 " + std::to_wstring(dueWords.size() - 1) + L" 个单词需要复习";
+            }
+            
+            g_reminderText = wordText + L"\n" + meaningText;
         }
-        g_reminderText = Utf8ToWide(oss.str());
 
         WNDCLASSW wc = {};
         wc.lpfnWndProc = ReminderWndProc;
