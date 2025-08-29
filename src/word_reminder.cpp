@@ -515,17 +515,11 @@ namespace WordReminder
                 // 正文 - 分别绘制单词和释义
                 int yOffset = content.top + 40;
                 
-                // 绘制单词（使用大字体）
-                if (g_fontWord) SelectObject(hdc, g_fontWord);
-                SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
-                RECT wordRc = { content.left + 10, yOffset, content.right - 10, yOffset + 50 };
-                DrawTextW(hdc, L"📖 formal decision", -1, &wordRc, DT_LEFT | DT_TOP | DT_SINGLELINE);
-                
-                // 绘制释义（使用小字体）
+                // 绘制动态内容
                 if (g_fontText) SelectObject(hdc, g_fontText);
                 SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                RECT meaningRc = { content.left + 10, yOffset + 50, content.right - 10, content.bottom - 10 };
-                DrawTextW(hdc, L"    A formal decision is a choice or resolution that is made in a serious, structured way, following specific rules and procedures. It's not just a casual thought or a quick choice; it's an official and binding conclusion.", -1, &meaningRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
+                DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 EndPaint(hwnd, &ps);
                 return 0;

@@ -821,8 +821,16 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     if (winConfigFile.is_open()) {
         int savedWidth, savedHeight, savedX, savedY;
         if (winConfigFile >> savedWidth >> savedHeight >> savedX >> savedY) {
-            AppendLog("[window] Restoring window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
-            SetWindowPos(hwnd, NULL, savedX, savedY, savedWidth, savedHeight, SWP_NOZORDER);
+            // 检查窗口位置是否有效（不在屏幕外）
+            if (savedX >= -10000 && savedY >= -10000 && savedX < 10000 && savedY < 10000 && 
+                savedWidth > 100 && savedHeight > 100 && savedWidth < 5000 && savedHeight < 5000) {
+                AppendLog("[window] Restoring window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+                SetWindowPos(hwnd, NULL, savedX, savedY, savedWidth, savedHeight, SWP_NOZORDER);
+            } else {
+                AppendLog("[window] Invalid window position detected, using default size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+                // 使用默认位置和大小
+                SetWindowPos(hwnd, NULL, 100, 100, 1280, 720, SWP_NOZORDER);
+            }
         }
         winConfigFile.close();
     } else {
@@ -1138,9 +1146,18 @@ int main(int, char**)
     if (glfwConfigFile.is_open()) {
         int savedWidth, savedHeight, savedX, savedY;
         if (glfwConfigFile >> savedWidth >> savedHeight >> savedX >> savedY) {
-            AppendLog("[window] Restoring GLFW window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
-            glfwSetWindowSize(window, savedWidth, savedHeight);
-            glfwSetWindowPos(window, savedX, savedY);
+            // 检查窗口位置是否有效（不在屏幕外）
+            if (savedX >= -10000 && savedY >= -10000 && savedX < 10000 && savedY < 10000 && 
+                savedWidth > 100 && savedHeight > 100 && savedWidth < 5000 && savedHeight < 5000) {
+                AppendLog("[window] Restoring GLFW window size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+                glfwSetWindowSize(window, savedWidth, savedHeight);
+                glfwSetWindowPos(window, savedX, savedY);
+            } else {
+                AppendLog("[window] Invalid GLFW window position detected, using default size: " + std::to_string(savedWidth) + "x" + std::to_string(savedHeight) + " at " + std::to_string(savedX) + "," + std::to_string(savedY));
+                // 使用默认位置和大小
+                glfwSetWindowSize(window, 1280, 720);
+                glfwSetWindowPos(window, 100, 100);
+            }
         }
         glfwConfigFile.close();
     } else {
