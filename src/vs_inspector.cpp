@@ -2270,7 +2270,13 @@ namespace VSInspector
              {
                  ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
                  
-                 // 创建可滚动的配置列表区域，使用剩余空间
+                 // 创建可滚动的配置列表区域，使用剩余空间，自定义滚动条样式
+                 ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f); // 设置滚动条宽度为8像素
+                 ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.1f, 0.1f, 0.1f, 0.6f)); // 滚动条背景色
+                 ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0.3f, 0.3f, 0.3f, 0.8f)); // 滚动条抓取器颜色
+                 ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(0.4f, 0.4f, 0.4f, 0.9f)); // 悬停时颜色
+                 ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.5f, 0.5f, 0.5f, 1.0f)); // 激活时颜色
+                 
                  ImGui::BeginChild("ConfigList", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
                  
                  std::vector<SavedConfig> sorted = g_savedConfigs;
@@ -2346,8 +2352,12 @@ namespace VSInspector
                     ImGui::Spacing();
                 }
                 
-                // 结束可滚动的配置列表区域
-                ImGui::EndChild();
+                                 // 结束可滚动的配置列表区域
+                 ImGui::EndChild();
+                 
+                 // 恢复滚动条样式
+                 ImGui::PopStyleColor(4); // 弹出4个颜色样式
+                 ImGui::PopStyleVar(); // 弹出滚动条大小样式
             }
             else
             {
