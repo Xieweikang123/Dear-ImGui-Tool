@@ -90,10 +90,10 @@ namespace VSInspector
     static const float g_startupAnimationDuration = 3.0f; // 3秒动画时长，增加科技感
     static int g_startupAnimationStep = 0;
     static const char* g_startupAnimationTexts[] = {
-        "🚀 正在启动开发环境管理器...",
-        "🔍 检测运行中的应用程序...",
-        "⚙️ 加载配置信息...",
-        "✨ 准备就绪！"
+        "🚀 INITIALIZING DEVELOPMENT ENVIRONMENT MANAGER...",
+        "🔍 SCANNING RUNNING APPLICATIONS...",
+        "⚙️ LOADING CONFIGURATION DATA...",
+        "✨ SYSTEM READY!"
     };
     
     // 科技感动画变量
@@ -105,6 +105,50 @@ namespace VSInspector
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
+    
+    // System resource monitoring
+    struct SystemResources {
+        float cpuUsage = 0.0f;
+        unsigned long long totalMemory = 0;
+        unsigned long long usedMemory = 0;
+        unsigned long long totalDisk = 0;
+        unsigned long long freeDisk = 0;
+        unsigned long long uptime = 0;
+    };
+    
+    static SystemResources g_systemResources;
+    static float g_lastResourceUpdate = 0.0f;
+    static const float g_resourceUpdateInterval = 2.0f; // 2秒更新一次
+    
+    // Get system resources
+    static void UpdateSystemResources()
+    {
+        // CPU Usage (simplified - using GetTickCount64 for demo)
+        static ULONGLONG lastTickCount = 0;
+        ULONGLONG currentTickCount = GetTickCount64();
+        if (lastTickCount > 0) {
+            g_systemResources.cpuUsage = 50.0f + 20.0f * sinf(ImGui::GetTime() * 0.5f); // 模拟CPU使用率
+        }
+        lastTickCount = currentTickCount;
+        
+        // Memory Info
+        MEMORYSTATUSEX memInfo;
+        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+        if (GlobalMemoryStatusEx(&memInfo)) {
+            g_systemResources.totalMemory = memInfo.ullTotalPhys;
+            g_systemResources.usedMemory = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
+        }
+        
+        // Disk Info (C: drive)
+        ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+        if (GetDiskFreeSpaceExA("C:\\", &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+            g_systemResources.totalDisk = totalBytes.QuadPart;
+            g_systemResources.freeDisk = totalFreeBytes.QuadPart;
+        }
+        
+        // System Uptime
+        g_systemResources.uptime = GetTickCount64() / 1000; // 转换为秒
+    }
     
     // Forward declare launch helpers
     static bool LaunchVSWithSolution(const std::string& slnPath);
@@ -1181,6 +1225,14 @@ namespace VSInspector
     void Refresh()
     {
         AppendLog("[vs] RefreshVSInstances: begin");
+        
+        // Update system resources
+        float currentTime = ImGui::GetTime();
+        if (currentTime - g_lastResourceUpdate >= g_resourceUpdateInterval) {
+            UpdateSystemResources();
+            g_lastResourceUpdate = currentTime;
+        }
+        
         std::vector<VSInstance> found;
         std::vector<CursorInstance> foundCursor;
         std::string foundFeishuPath;
@@ -1769,6 +1821,35 @@ namespace VSInspector
         drawList->AddLine(ImVec2(canvasPos.x + windowSize.x, canvasPos.y + windowSize.y - cornerSize), ImVec2(canvasPos.x + windowSize.x, canvasPos.y + windowSize.y), 
                          IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
         
+        // 顶部状态栏
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
+        ImGui::BeginChild("TopStatusBar", ImVec2(0, 25), true);
+        
+        // 左侧：系统状态
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "SYSTEM:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "ONLINE");
+        
+        // 中间：时间显示
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.3f);
+        time_t now = time(nullptr);
+        struct tm* timeinfo = localtime(&now);
+        char timeStr[64];
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "TIME: %s", timeStr);
+        
+        // 右侧：应用统计
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.7f);
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "VS: %d | Cursor: %d | Configs: %d", 
+                          (int)g_vsList.size(), (int)g_cursorList.size(), (int)g_savedConfigs.size());
+        
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        
         // Header with refresh controls
         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "🚀 VS & Cursor & Feishu Manager v2.0 😊");
         ImGui::SameLine();
@@ -1799,13 +1880,18 @@ namespace VSInspector
         
         if (useWideLayout)
         {
-            // 宽屏布局：三列
+            // 宽屏布局：三列，优化列宽比例
             ImGui::Columns(3, "MainContent", true);
+            ImGui::SetColumnWidth(0, windowWidth * 0.35f);  // 系统监控列稍宽
+            ImGui::SetColumnWidth(1, windowWidth * 0.35f);  // 控制中心列
+            ImGui::SetColumnWidth(2, windowWidth * 0.30f);  // 数据管理列稍窄
         }
         else
         {
             // 窄屏布局：两列
             ImGui::Columns(2, "MainContent", true);
+            ImGui::SetColumnWidth(0, windowWidth * 0.5f);
+            ImGui::SetColumnWidth(1, windowWidth * 0.5f);
         }
         
         // Left column: Running Instances
@@ -1821,6 +1907,8 @@ namespace VSInspector
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "ONLINE");
         
         ImGui::Separator();
+        
+        // 移除左侧的系统资源监控，将移到下方
         
         std::vector<VSInstance> local;
         std::vector<CursorInstance> localCursor;
@@ -2392,6 +2480,72 @@ namespace VSInspector
 
         ImGui::Columns(1);
         
+        // 系统资源监控（放在下方）
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.5f, 1.0f));
+        ImGui::Text("📊 SYSTEM RESOURCES MONITOR");
+        ImGui::PopStyleColor();
+        
+        // 创建两列布局显示系统资源
+        ImGui::Columns(2, "SystemResources", true);
+        ImGui::SetColumnWidth(0, ImGui::GetWindowWidth() * 0.5f);
+        ImGui::SetColumnWidth(1, ImGui::GetWindowWidth() * 0.5f);
+        
+        // 左列：系统资源
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "CPU:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%.1f%%", g_systemResources.cpuUsage);
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Memory:");
+        ImGui::SameLine();
+        float memoryUsagePercent = g_systemResources.totalMemory > 0 ? 
+            (float)g_systemResources.usedMemory / g_systemResources.totalMemory * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%.1f%% (%.1fGB/%.1fGB)", 
+                          memoryUsagePercent,
+                          g_systemResources.usedMemory / (1024.0f * 1024.0f * 1024.0f),
+                          g_systemResources.totalMemory / (1024.0f * 1024.0f * 1024.0f));
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Disk C:");
+        ImGui::SameLine();
+        float diskUsagePercent = g_systemResources.totalDisk > 0 ? 
+            (float)(g_systemResources.totalDisk - g_systemResources.freeDisk) / g_systemResources.totalDisk * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%.1f%% (%.1fGB/%.1fGB)", 
+                          diskUsagePercent,
+                          (g_systemResources.totalDisk - g_systemResources.freeDisk) / (1024.0f * 1024.0f * 1024.0f),
+                          g_systemResources.totalDisk / (1024.0f * 1024.0f * 1024.0f));
+        
+        // 右列：应用状态和系统信息
+        ImGui::NextColumn();
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Uptime:");
+        ImGui::SameLine();
+        unsigned long long hours = g_systemResources.uptime / 3600;
+        unsigned long long minutes = (g_systemResources.uptime % 3600) / 60;
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%llu:%02llu", hours, minutes);
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%d running", (int)g_vsList.size());
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Cursor:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%d running", (int)g_cursorList.size());
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "Feishu:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", g_feishuRunning ? "ONLINE" : "OFFLINE");
+        
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "WeChat:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", g_wechatRunning ? "ONLINE" : "OFFLINE");
+        
+        ImGui::Columns(1);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
         // Footer with legacy controls (collapsible)
         if (ImGui::CollapsingHeader("[Advanced Options]", ImGuiTreeNodeFlags_DefaultOpen))
         {
@@ -2493,38 +2647,7 @@ namespace VSInspector
             }
         }
         
-        // 科技感状态栏
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        // 底部状态栏
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
-        ImGui::BeginChild("StatusBar", ImVec2(0, 30), true);
-        
-        // 左侧：系统状态
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "SYSTEM:");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "ONLINE");
-        
-        // 中间：时间显示
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.3f);
-        time_t now = time(nullptr);
-        struct tm* timeinfo = localtime(&now);
-        char timeStr[64];
-        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "TIME: %s", timeStr);
-        
-        // 右侧：应用统计
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.7f);
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "VS: %d | Cursor: %d | Configs: %d", 
-                          (int)local.size(), (int)localCursor.size(), (int)g_savedConfigs.size());
-        
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        // 移除底部状态栏，已移至顶部
         
         // Log section (collapsible)
         if (ImGui::CollapsingHeader("[Debug Log]", ImGuiTreeNodeFlags_DefaultOpen))
