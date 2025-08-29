@@ -87,7 +87,7 @@ namespace VSInspector
     // 启动动画相关变量
     static bool g_showStartupAnimation = true;
     static float g_startupAnimationTime = 0.0f;
-    static const float g_startupAnimationDuration = 3.0f; // 3秒动画时长，增加科技感
+    static const float g_startupAnimationDuration = 1.0f; // 2秒动画时长，增加科技感
     static int g_startupAnimationStep = 0;
     static const char* g_startupAnimationTexts[] = {
         "🚀 INITIALIZING DEVELOPMENT ENVIRONMENT MANAGER...",
@@ -2269,6 +2269,10 @@ namespace VSInspector
              if (!g_savedConfigs.empty())
              {
                  ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                 
+                 // 创建可滚动的配置列表区域，使用剩余空间
+                 ImGui::BeginChild("ConfigList", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+                 
                  std::vector<SavedConfig> sorted = g_savedConfigs;
                  std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
                      if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
@@ -2341,6 +2345,9 @@ namespace VSInspector
                     ImGui::EndGroup();
                     ImGui::Spacing();
                 }
+                
+                // 结束可滚动的配置列表区域
+                ImGui::EndChild();
             }
             else
             {
