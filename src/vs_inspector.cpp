@@ -83,6 +83,18 @@ namespace VSInspector
     static bool g_autoRefreshEnabled = true;
     static float g_lastRefreshTime = 0.0f;
     static const float g_autoRefreshInterval = 5.0f; // 5秒间隔
+    
+    // 启动动画相关变量
+    static bool g_showStartupAnimation = true;
+    static float g_startupAnimationTime = 0.0f;
+    static const float g_startupAnimationDuration = 2.0f; // 2秒动画时长
+    static int g_startupAnimationStep = 0;
+    static const char* g_startupAnimationTexts[] = {
+        "🚀 正在启动开发环境管理器...",
+        "🔍 检测运行中的应用程序...",
+        "⚙️ 加载配置信息...",
+        "✨ 准备就绪！"
+    };
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -1538,8 +1550,35 @@ namespace VSInspector
         // Ensure preferences are loaded on first UI draw
         EnsurePrefsLoaded();
         
-        // 自动刷新逻辑
+        // 启动动画逻辑
         float currentTime = ImGui::GetTime();
+        if (g_showStartupAnimation)
+        {
+            if (g_startupAnimationTime == 0.0f)
+            {
+                g_startupAnimationTime = currentTime;
+            }
+            
+            float elapsed = currentTime - g_startupAnimationTime;
+            float progress = elapsed / g_startupAnimationDuration;
+            
+            // 根据进度更新动画步骤
+            if (progress < 0.25f) g_startupAnimationStep = 0;
+            else if (progress < 0.5f) g_startupAnimationStep = 1;
+            else if (progress < 0.75f) g_startupAnimationStep = 2;
+            else g_startupAnimationStep = 3;
+            
+            // 动画完成后隐藏
+            if (progress >= 1.0f)
+            {
+                g_showStartupAnimation = false;
+                // 动画完成后立即执行一次刷新
+                Refresh();
+                g_lastRefreshTime = currentTime;
+            }
+        }
+        
+        // 自动刷新逻辑
         if (g_autoRefreshEnabled && (currentTime - g_lastRefreshTime) >= g_autoRefreshInterval)
         {
             Refresh();
@@ -1549,6 +1588,49 @@ namespace VSInspector
         // 设置窗口为可调整大小，并设置最小尺寸
         ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
         ImGui::Begin(" VS & Cursor & Feishu Manager 🚀", nullptr, ImGuiWindowFlags_None);
+        
+        // 启动动画显示
+        if (g_showStartupAnimation)
+        {
+            float currentTime = ImGui::GetTime();
+            float elapsed = currentTime - g_startupAnimationTime;
+            float progress = elapsed / g_startupAnimationDuration;
+            
+            // 居中显示启动动画
+            ImGui::SetCursorPosY(ImGui::GetWindowHeight() * 0.4f);
+            
+            // 显示动画文本
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.8f, 0.2f, 1.0f));
+            ImGui::TextWrapped("%s", g_startupAnimationTexts[g_startupAnimationStep]);
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
+            
+            // 显示进度条
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.2f, 0.8f, 0.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.1f, 1.0f));
+            ImGui::ProgressBar(progress, ImVec2(-1, 20), "");
+            ImGui::PopStyleColor();
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
+            
+            // 显示进度百分比
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%.0f%%", progress * 100.0f);
+            
+            // 添加一些装饰性的动画效果
+            static float pulseTime = 0.0f;
+            pulseTime += ImGui::GetIO().DeltaTime * 2.0f;
+            float pulseAlpha = 0.5f + 0.3f * sinf(pulseTime);
+            
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 20);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.2f, pulseAlpha));
+            ImGui::Text("请稍候...");
+            ImGui::PopStyleColor();
+            
+            ImGui::End(); // 正确结束窗口
+            return; // 动画期间不显示其他内容
+        }
         
         // Header with refresh controls
         ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor & Feishu Manager 😊");
