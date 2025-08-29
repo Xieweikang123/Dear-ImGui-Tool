@@ -48,6 +48,8 @@ namespace VSInspector
 
     static std::vector<VSInstance> g_vsList;
     static std::vector<CursorInstance> g_cursorList;
+    static std::string g_feishuPath;
+    static bool g_feishuRunning = false;
     static std::mutex g_vsMutexVS;
 
     // Configuration structure
@@ -56,6 +58,7 @@ namespace VSInspector
         std::string name;
         std::string vsSolutionPath;
         std::string cursorFolderPath;
+        std::string feishuPath;
         unsigned long long createdAt = 0;    // unix time seconds
         unsigned long long lastUsedAt = 0;   // unix time seconds
     };
@@ -68,14 +71,9 @@ namespace VSInspector
     static std::string g_currentConfigName;
     static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
-    // Edit-config UI state
-    static bool g_showEditConfigPopup = false;
-    static SavedConfig g_editingDraft;
-    static std::string g_editingOriginalName;
-    static char g_editNameBuf[256] = {0};
-    static char g_editVsBuf[1024] = {0};
-    static char g_editCursorBuf[1024] = {0};
-    static std::string g_editErrorMsg;
+         // 用于主界面配置名称输入框的全局变量
+     static char g_mainConfigNameBuf[256] = {0};
+     static bool g_shouldFillConfigName = false;
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -83,6 +81,7 @@ namespace VSInspector
     // Forward declare launch helpers
     static bool LaunchVSWithSolution(const std::string& slnPath);
     static bool LaunchCursorWithFolder(const std::string& folderPath);
+    static bool LaunchFeishu();
 
     // File dialog helpers (ANSI)
     static bool ShowOpenFileDialog(char* outPath, size_t outSize, const char* filter, const char* title)
@@ -176,6 +175,7 @@ namespace VSInspector
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
                     config.cursorFolderPath = g_selectedCursorFolder;
+                    config.feishuPath = g_feishuPath;
                     if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
                     found = true;
                     break;
@@ -187,6 +187,7 @@ namespace VSInspector
                 newConfig.name = g_currentConfigName;
                 newConfig.vsSolutionPath = g_selectedSlnPath;
                 newConfig.cursorFolderPath = g_selectedCursorFolder;
+                newConfig.feishuPath = g_feishuPath;
                 newConfig.createdAt = (unsigned long long)time(nullptr);
                 g_savedConfigs.push_back(newConfig);
             }
@@ -203,6 +204,7 @@ namespace VSInspector
             ofs << "      \"name\": \"" << JsonEscape(c.name) << "\",\n";
             ofs << "      \"vs\": \"" << JsonEscape(c.vsSolutionPath) << "\",\n";
             ofs << "      \"cursor\": \"" << JsonEscape(c.cursorFolderPath) << "\",\n";
+            ofs << "      \"feishu\": \"" << JsonEscape(c.feishuPath) << "\",\n";
             ofs << "      \"createdAt\": " << c.createdAt << ",\n";
             ofs << "      \"lastUsedAt\": " << c.lastUsedAt << "\n";
             ofs << "    }" << (i + 1 < g_savedConfigs.size() ? ",\n" : "\n");
@@ -211,6 +213,7 @@ namespace VSInspector
         AppendLog(std::string("[prefs] saved JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
         if (!g_selectedSlnPath.empty()) AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
         if (!g_selectedCursorFolder.empty()) AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+        if (!g_feishuPath.empty()) AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
     }
 
     static void SavePrefsToJson()
@@ -270,11 +273,11 @@ namespace VSInspector
                         std::string k; if (!ParseJsonString(content, pos, k)) { pos = content.size(); break; }
                         SkipWs(content, pos); if (pos >= content.size() || content[pos] != ':') { pos = content.size(); break; } pos++;
                         SkipWs(content, pos);
-                        if (k == "name" || k == "vs" || k == "cursor")
-                        {
-                            std::string v; if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
-                            if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else c.cursorFolderPath = v;
-                        }
+                                                 if (k == "name" || k == "vs" || k == "cursor" || k == "feishu")
+                         {
+                             std::string v; if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
+                             if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else if (k == "cursor") c.cursorFolderPath = v; else c.feishuPath = v;
+                         }
                         else if (k == "createdAt" || k == "lastUsedAt")
                         {
                             size_t start = pos; while (pos < content.size() && (isdigit((unsigned char)content[pos]) || content[pos]=='-')) pos++; unsigned long long val = strtoull(content.substr(start, pos-start).c_str(), nullptr, 10);
@@ -345,19 +348,22 @@ namespace VSInspector
         
         for (const auto& config : g_savedConfigs)
         {
-            ofs << "config=" << config.name << "\n";
-            ofs << "sln=" << config.vsSolutionPath << "\n";
-            ofs << "cursor=" << config.cursorFolderPath << "\n";
-            ofs << "created=" << config.createdAt << "\n";
-            ofs << "used=" << config.lastUsedAt << "\n";
+                         ofs << "config=" << config.name << "\n";
+             ofs << "sln=" << config.vsSolutionPath << "\n";
+             ofs << "cursor=" << config.cursorFolderPath << "\n";
+             ofs << "feishu=" << config.feishuPath << "\n";
+             ofs << "created=" << config.createdAt << "\n";
+             ofs << "used=" << config.lastUsedAt << "\n";
             ofs << "---\n";  // Separator between configs
         }
         
-        AppendLog(std::string("[prefs] saved ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
-        if (!g_selectedSlnPath.empty())
-            AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
-        if (!g_selectedCursorFolder.empty())
-            AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+                 AppendLog(std::string("[prefs] saved ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
+         if (!g_selectedSlnPath.empty())
+             AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
+         if (!g_selectedCursorFolder.empty())
+             AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+         if (!g_feishuPath.empty())
+             AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
     }
 
     static bool LoadPrefsFromTxt()
@@ -393,10 +399,14 @@ namespace VSInspector
             {
                 currentConfig.vsSolutionPath = line.substr(4);
             }
-            else if (line.rfind("cursor=", 0) == 0)
-            {
-                currentConfig.cursorFolderPath = line.substr(7);
-            }
+                         else if (line.rfind("cursor=", 0) == 0)
+             {
+                 currentConfig.cursorFolderPath = line.substr(7);
+             }
+             else if (line.rfind("feishu=", 0) == 0)
+             {
+                 currentConfig.feishuPath = line.substr(7);
+             }
             else if (line.rfind("created=", 0) == 0)
             {
                 currentConfig.createdAt = strtoull(line.substr(8).c_str(), nullptr, 10);
@@ -443,18 +453,21 @@ namespace VSInspector
         {
             if (config.name == configName)
             {
-                g_selectedSlnPath = config.vsSolutionPath;
-                g_selectedCursorFolder = config.cursorFolderPath;
-                // Keep the multi-select set in sync with single selection
-                g_selectedCursorFolders.clear();
-                if (!g_selectedCursorFolder.empty())
-                    g_selectedCursorFolders.insert(g_selectedCursorFolder);
-                g_currentConfigName = configName;
+                                 g_selectedSlnPath = config.vsSolutionPath;
+                 g_selectedCursorFolder = config.cursorFolderPath;
+                 g_feishuPath = config.feishuPath;
+                 // Keep the multi-select set in sync with single selection
+                 g_selectedCursorFolders.clear();
+                 if (!g_selectedCursorFolder.empty())
+                     g_selectedCursorFolders.insert(g_selectedCursorFolder);
+                 g_currentConfigName = configName;
                 AppendLog("[prefs] loaded config: " + configName);
-                if (!g_selectedSlnPath.empty())
-                    AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
-                if (!g_selectedCursorFolder.empty())
-                    AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+                                 if (!g_selectedSlnPath.empty())
+                     AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
+                 if (!g_selectedCursorFolder.empty())
+                     AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+                 if (!g_feishuPath.empty())
+                     AppendLog("[prefs] loaded Feishu path: " + g_feishuPath);
                 return;
             }
         }
@@ -497,8 +510,9 @@ namespace VSInspector
                     // Merge rule: keep earliest createdAt, max lastUsedAt, overwrite paths if provided
                     if (cur.createdAt == 0 || (inc.createdAt != 0 && inc.createdAt < cur.createdAt)) cur.createdAt = inc.createdAt;
                     if (inc.lastUsedAt > cur.lastUsedAt) cur.lastUsedAt = inc.lastUsedAt;
-                    if (!inc.vsSolutionPath.empty()) cur.vsSolutionPath = inc.vsSolutionPath;
-                    if (!inc.cursorFolderPath.empty()) cur.cursorFolderPath = inc.cursorFolderPath;
+                                         if (!inc.vsSolutionPath.empty()) cur.vsSolutionPath = inc.vsSolutionPath;
+                     if (!inc.cursorFolderPath.empty()) cur.cursorFolderPath = inc.cursorFolderPath;
+                     if (!inc.feishuPath.empty()) cur.feishuPath = inc.feishuPath;
                     break;
                 }
             }
@@ -509,19 +523,7 @@ namespace VSInspector
         }
     }
 
-    static void BeginEditConfig(const SavedConfig& cfg)
-    {
-        g_editingDraft = cfg;
-        g_editingOriginalName = cfg.name;
-        memset(g_editNameBuf, 0, sizeof(g_editNameBuf));
-        memset(g_editVsBuf, 0, sizeof(g_editVsBuf));
-        memset(g_editCursorBuf, 0, sizeof(g_editCursorBuf));
-        strncpy(g_editNameBuf, cfg.name.c_str(), sizeof(g_editNameBuf) - 1);
-        strncpy(g_editVsBuf, cfg.vsSolutionPath.c_str(), sizeof(g_editVsBuf) - 1);
-        strncpy(g_editCursorBuf, cfg.cursorFolderPath.c_str(), sizeof(g_editCursorBuf) - 1);
-        g_editErrorMsg.clear();
-        g_showEditConfigPopup = true;
-    }
+    
 
     static void EnsurePrefsLoaded()
     {
@@ -630,6 +632,87 @@ namespace VSInspector
         {
             DWORD error = GetLastError();
             AppendLog("[launch] Cursor launch failed, error: " + std::to_string(error));
+            return false;
+        }
+    }
+
+    static bool LaunchFeishu()
+    {
+        // Use saved path if available
+        if (!g_feishuPath.empty())
+        {
+            std::string feishuExePath = g_feishuPath;
+            if (fs::exists(feishuExePath))
+            {
+                std::string cmd = "\"" + feishuExePath + "\"";
+                AppendLog("[launch] Feishu command: " + cmd);
+                
+                STARTUPINFOA si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_SHOW;
+                
+                if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+                {
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    AppendLog("[launch] Feishu launched successfully");
+                    return true;
+                }
+                else
+                {
+                    DWORD error = GetLastError();
+                    AppendLog("[launch] Feishu launch failed, error: " + std::to_string(error));
+                    return false;
+                }
+            }
+        }
+        
+        // Fallback: Try to find Feishu installation
+        std::vector<std::string> feishuPaths = {
+            "C:\\Users\\" + GetEnvU8("USERNAME") + "\\AppData\\Local\\Programs\\feishu\\feishu.exe",
+            "C:\\Users\\" + GetEnvU8("USERNAME") + "\\AppData\\Local\\Programs\\lark\\lark.exe",
+            "C:\\Program Files\\feishu\\feishu.exe",
+            "C:\\Program Files\\lark\\lark.exe",
+            "C:\\Program Files (x86)\\feishu\\feishu.exe",
+            "C:\\Program Files (x86)\\lark\\lark.exe"
+        };
+        
+        std::string feishuExePath;
+        for (const auto& path : feishuPaths)
+        {
+            if (fs::exists(path))
+            {
+                feishuExePath = path;
+                break;
+            }
+        }
+        
+        if (feishuExePath.empty())
+        {
+            AppendLog("[launch] Feishu not found in common locations");
+            return false;
+        }
+        
+        std::string cmd = "\"" + feishuExePath + "\"";
+        AppendLog("[launch] Feishu command: " + cmd);
+        
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOW;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            AppendLog("[launch] Feishu launched successfully");
+            return true;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            AppendLog("[launch] Feishu launch failed, error: " + std::to_string(error));
             return false;
         }
     }
@@ -951,6 +1034,8 @@ namespace VSInspector
         AppendLog("[vs] RefreshVSInstances: begin");
         std::vector<VSInstance> found;
         std::vector<CursorInstance> foundCursor;
+        std::string foundFeishuPath;
+        bool foundFeishuRunning = false;
 
         // Load persisted prefs once per refresh to show defaults
         if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
@@ -1009,6 +1094,20 @@ namespace VSInspector
                     AppendLog(std::string("[cursor] found cursor.exe pid=") + std::to_string((unsigned long)cinst.pid) + (cinst.exePath.empty()?" path=<unknown>":std::string(" path=") + cinst.exePath));
                     foundCursor.push_back(cinst);
                 }
+                else if (exeLower == std::string("feishu.exe") || exeLower == std::string("lark.exe"))
+                {
+                    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+                    if (hProc)
+                    {
+                        char buf[MAX_PATH];
+                        DWORD sz = (DWORD)sizeof(buf);
+                        if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
+                            foundFeishuPath.assign(buf, sz);
+                        CloseHandle(hProc);
+                    }
+                    foundFeishuRunning = true;
+                    AppendLog(std::string("[feishu] found ") + exeLower + std::string(" pid=") + std::to_string((unsigned long)pe.th32ProcessID) + (foundFeishuPath.empty()?" path=<unknown>":std::string(" path=") + foundFeishuPath));
+                }
             } while (Process32Next(hSnap, &pe));
         }
         CloseHandle(hSnap);
@@ -1039,6 +1138,8 @@ namespace VSInspector
             if (it != pidToTitle.end()) inst.windowTitle = it->second;
             AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)inst.pid) + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle));
         }
+
+
 
         // 首先获取所有openedWindows中的文件夹
         std::vector<std::string> openedFolders;
@@ -1279,9 +1380,12 @@ namespace VSInspector
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             g_vsList.swap(found);
             g_cursorList.swap(foundCursor);
+            g_feishuPath = foundFeishuPath;
+            g_feishuRunning = foundFeishuRunning;
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
         AppendLog(std::string("[cursor] RefreshCursorInstances: end, instances=") + std::to_string((int)g_cursorList.size()));
+        AppendLog(std::string("[feishu] Status: ") + (g_feishuRunning ? "Running" : "Not running") + (g_feishuPath.empty() ? "" : " Path: " + g_feishuPath));
         for (const auto& inst : g_vsList)
         {
             AppendLog(std::string("[vs] summary pid=") + std::to_string((unsigned long)inst.pid)
@@ -1298,19 +1402,14 @@ namespace VSInspector
         
         // 设置窗口为可调整大小，并设置最小尺寸
         ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
-        ImGui::Begin(" VS & Cursor Manager 🚀", nullptr, ImGuiWindowFlags_None);
+        ImGui::Begin(" VS & Cursor & Feishu Manager 🚀", nullptr, ImGuiWindowFlags_None);
         
         // Header with refresh controls
-        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor Manager 😊");
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "VS & Cursor & Feishu Manager 😊");
         ImGui::SameLine();
         if (ImGui::Button("[Refresh]"))
         {
             ReplaceTool::AppendLog("[vs] UI: Refresh clicked");
-            Refresh();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("[Auto-Refresh]"))
-        {
             Refresh();
         }
         
@@ -1337,10 +1436,14 @@ namespace VSInspector
         
         std::vector<VSInstance> local;
         std::vector<CursorInstance> localCursor;
+        std::string localFeishuPath;
+        bool localFeishuRunning;
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             local = g_vsList;
             localCursor = g_cursorList;
+            localFeishuPath = g_feishuPath;
+            localFeishuRunning = g_feishuRunning;
         }
         
         // VS Instances
@@ -1434,6 +1537,32 @@ namespace VSInspector
             ImGui::TextDisabled("No Cursor instances found");
         }
         
+        ImGui::Spacing();
+        
+        // Feishu Status
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Feishu Status");
+        ImGui::BeginGroup();
+        if (localFeishuRunning)
+        {
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "✓ Running");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "✗ Not Running");
+        }
+        
+        if (!localFeishuPath.empty())
+        {
+            ImGui::TextWrapped("[Path] %s", localFeishuPath.c_str());
+            bool checked = !g_feishuPath.empty();
+            if (ImGui::Checkbox("[Save Feishu Path]", &checked))
+            {
+                g_feishuPath = checked ? localFeishuPath : std::string();
+            }
+        }
+        ImGui::EndGroup();
+        
         // Middle/Right column: Current Status & Quick Actions
         ImGui::NextColumn();
         ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Current Status & Actions]");
@@ -1499,64 +1628,110 @@ namespace VSInspector
             ImGui::TextDisabled("Select VS solution or Cursor folder first");
         }
         
-        // Third column (only in wide layout): Configuration Management
-        if (useWideLayout)
+        // Launch Feishu
+        if (!g_feishuPath.empty())
         {
-            ImGui::NextColumn();
-            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
-            ImGui::Separator();
-            
-            // Save new configuration
-            static char configName[256] = "";
-            ImGui::InputText("Config Name", configName, sizeof(configName));
-            if (ImGui::Button("[Save Current as New Config]"))
+            if (ImGui::Button("[Launch Feishu]"))
             {
-                if (strlen(configName) > 0)
-                {
-                    g_currentConfigName = configName;
-                    SavePrefs();
-                    AppendLog("[prefs] saved as config: " + g_currentConfigName);
-                    memset(configName, 0, sizeof(configName)); // Clear input after save
-                }
+                LaunchFeishu();
             }
-            
-            ImGui::Spacing();
-            
-            // Load existing configurations (sorted by lastUsedAt desc, then createdAt desc)
-            if (!g_savedConfigs.empty())
-            {
-                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
-                std::vector<SavedConfig> sorted = g_savedConfigs;
-                std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
-                    if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
-                    return a.createdAt > b.createdAt;
-                });
-                for (const auto& config : sorted)
-                {
-                    ImGui::BeginGroup();
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
-                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
-                    ImGui::Text(" [Config] %s", config.name.c_str());
-                    ImGui::PopStyleVar();
-                    ImGui::PopStyleColor();
-                    if (!config.vsSolutionPath.empty())
-                        ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
-                    if (!config.cursorFolderPath.empty())
-                        ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
-                    
-                    if (ImGui::Button(("[Load]##" + config.name).c_str()))
-                    {
-                        // Update last used timestamp then load
-                        for (auto &cfg : g_savedConfigs) { if (cfg.name == config.name) { cfg.lastUsedAt = (unsigned long long)time(nullptr); break; } }
-                        SavePrefs();
-                        LoadConfig(config.name);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button(("[Edit]##" + config.name).c_str()))
-                    {
-                        BeginEditConfig(config);
-                        ImGui::OpenPopup("Edit Configuration");
-                    }
+        }
+        else
+        {
+            ImGui::TextDisabled("Save Feishu path first");
+        }
+        
+                 // Third column (only in wide layout): Configuration Management
+         if (useWideLayout)
+         {
+             ImGui::NextColumn();
+             ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
+             ImGui::Separator();
+             
+             // Save/Update configuration
+             // 如果需要填充配置名称（从编辑弹窗触发）
+             if (g_shouldFillConfigName)
+             {
+                 strncpy(g_mainConfigNameBuf, g_currentConfigName.c_str(), sizeof(g_mainConfigNameBuf) - 1);
+                 g_shouldFillConfigName = false;
+             }
+             
+             ImGui::InputText("Config Name", g_mainConfigNameBuf, sizeof(g_mainConfigNameBuf));
+             
+             // 根据是否已存在配置来决定按钮文本和行为
+             bool configExists = false;
+             for (const auto& cfg : g_savedConfigs)
+             {
+                 if (cfg.name == g_mainConfigNameBuf)
+                 {
+                     configExists = true;
+                     break;
+                 }
+             }
+             
+             const char* buttonText = configExists ? "[Update Existing Config]" : "[Save Current as New Config]";
+             if (ImGui::Button(buttonText))
+             {
+                 if (strlen(g_mainConfigNameBuf) > 0)
+                 {
+                     g_currentConfigName = g_mainConfigNameBuf;
+                     SavePrefs();
+                     if (configExists)
+                     {
+                         AppendLog("[prefs] updated config: " + g_currentConfigName);
+                     }
+                     else
+                     {
+                         AppendLog("[prefs] saved as new config: " + g_currentConfigName);
+                         memset(g_mainConfigNameBuf, 0, sizeof(g_mainConfigNameBuf)); // 只有新建时才清空输入框
+                     }
+                 }
+             }
+             
+             ImGui::Spacing();
+             
+             // Load existing configurations (sorted by lastUsedAt desc, then createdAt desc)
+             if (!g_savedConfigs.empty())
+             {
+                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                 std::vector<SavedConfig> sorted = g_savedConfigs;
+                 std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
+                     if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
+                     return a.createdAt > b.createdAt;
+                 });
+                 for (const auto& config : sorted)
+                 {
+                     ImGui::BeginGroup();
+                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
+                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
+                     ImGui::Text(" [Config] %s", config.name.c_str());
+                     ImGui::PopStyleVar();
+                     ImGui::PopStyleColor();
+                     if (!config.vsSolutionPath.empty())
+                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
+                     if (!config.cursorFolderPath.empty())
+                         ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                     if (!config.feishuPath.empty())
+                         ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
+                     
+                     if (ImGui::Button(("[Load]##" + config.name).c_str()))
+                     {
+                         // Update last used timestamp then load
+                         for (auto &cfg : g_savedConfigs) { if (cfg.name == config.name) { cfg.lastUsedAt = (unsigned long long)time(nullptr); break; } }
+                         SavePrefs();
+                         LoadConfig(config.name);
+                     }
+                     ImGui::SameLine();
+                     if (ImGui::Button(("[Edit]##" + config.name).c_str()))
+                     {
+                         // 直接将配置名称填入到主界面的 Config Name 输入框
+                         memset(g_mainConfigNameBuf, 0, sizeof(g_mainConfigNameBuf));
+                         strncpy(g_mainConfigNameBuf, config.name.c_str(), sizeof(g_mainConfigNameBuf) - 1);
+                         g_currentConfigName = config.name;
+                         
+                         // 加载配置到当前选择
+                         LoadConfig(config.name);
+                     }
                     ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
@@ -1601,17 +1776,43 @@ namespace VSInspector
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.2f, 1.0f), "[Configuration Management]");
             
-            // Save new configuration
-            static char configName[256] = "";
-            ImGui::InputText("Config Name", configName, sizeof(configName));
-            if (ImGui::Button("[Save Current as New Config]"))
+            // Save/Update configuration
+            // 如果需要填充配置名称（从编辑弹窗触发）
+            if (g_shouldFillConfigName)
             {
-                if (strlen(configName) > 0)
+                strncpy(g_mainConfigNameBuf, g_currentConfigName.c_str(), sizeof(g_mainConfigNameBuf) - 1);
+                g_shouldFillConfigName = false;
+            }
+            
+            ImGui::InputText("Config Name", g_mainConfigNameBuf, sizeof(g_mainConfigNameBuf));
+            
+            // 根据是否已存在配置来决定按钮文本和行为
+            bool configExists = false;
+            for (const auto& cfg : g_savedConfigs)
+            {
+                if (cfg.name == g_mainConfigNameBuf)
                 {
-                    g_currentConfigName = configName;
+                    configExists = true;
+                    break;
+                }
+            }
+            
+            const char* buttonText = configExists ? "[Update Existing Config]" : "[Save Current as New Config]";
+            if (ImGui::Button(buttonText))
+            {
+                if (strlen(g_mainConfigNameBuf) > 0)
+                {
+                    g_currentConfigName = g_mainConfigNameBuf;
                     SavePrefs();
-                    AppendLog("[prefs] saved as config: " + g_currentConfigName);
-                    memset(configName, 0, sizeof(configName)); // Clear input after save
+                    if (configExists)
+                    {
+                        AppendLog("[prefs] updated config: " + g_currentConfigName);
+                    }
+                    else
+                    {
+                        AppendLog("[prefs] saved as new config: " + g_currentConfigName);
+                        memset(g_mainConfigNameBuf, 0, sizeof(g_mainConfigNameBuf)); // 只有新建时才清空输入框
+                    }
                 }
             }
             
@@ -1638,6 +1839,8 @@ namespace VSInspector
                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
                     if (!config.cursorFolderPath.empty())
                         ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                    if (!config.feishuPath.empty())
+                        ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
                     
                     if (ImGui::Button(("[Load]##" + config.name).c_str()))
                     {
@@ -1647,11 +1850,16 @@ namespace VSInspector
                         LoadConfig(config.name);
                     }
                     ImGui::SameLine();
-                    if (ImGui::Button(("[Edit]##" + config.name).c_str()))
-                    {
-                        BeginEditConfig(config);
-                        ImGui::OpenPopup("Edit Configuration");
-                    }
+                                         if (ImGui::Button(("[Edit]##" + config.name).c_str()))
+                     {
+                         // 直接将配置名称填入到主界面的 Config Name 输入框
+                         memset(g_mainConfigNameBuf, 0, sizeof(g_mainConfigNameBuf));
+                         strncpy(g_mainConfigNameBuf, config.name.c_str(), sizeof(g_mainConfigNameBuf) - 1);
+                         g_currentConfigName = config.name;
+                         
+                         // 加载配置到当前选择
+                         LoadConfig(config.name);
+                     }
                     ImGui::SameLine();
                     if (ImGui::Button(("[Delete]##" + config.name).c_str()))
                     {
@@ -1691,72 +1899,7 @@ namespace VSInspector
             }
         }
         
-        // Shared Edit Configuration modal
-        if (ImGui::BeginPopupModal("Edit Configuration", NULL, ImGuiWindowFlags_AlwaysAutoResize))
-        {
-            ImGui::Text("Edit configuration");
-            ImGui::Separator();
-            ImGui::InputText("Name", g_editNameBuf, sizeof(g_editNameBuf));
-            ImGui::InputText("VS Solution Path", g_editVsBuf, sizeof(g_editVsBuf));
-            ImGui::InputText("Cursor Folder Path", g_editCursorBuf, sizeof(g_editCursorBuf));
-            if (!g_editErrorMsg.empty())
-            {
-                ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.0f), "%s", g_editErrorMsg.c_str());
-            }
-            ImGui::Separator();
-            if (ImGui::Button("Save", ImVec2(120, 0)))
-            {
-                std::string newName = g_editNameBuf;
-                std::string newVs = g_editVsBuf;
-                std::string newCursor = g_editCursorBuf;
-                if (newName.empty())
-                {
-                    g_editErrorMsg = "Name cannot be empty";
-                }
-                else
-                {
-                    bool nameConflict = false;
-                    for (const auto& c : g_savedConfigs)
-                    {
-                        if (c.name == newName && newName != g_editingOriginalName) { nameConflict = true; break; }
-                    }
-                    if (nameConflict)
-                    {
-                        g_editErrorMsg = "Duplicate name";
-                    }
-                    else
-                    {
-                        // Apply changes
-                        for (auto &c : g_savedConfigs)
-                        {
-                            if (c.name == g_editingOriginalName)
-                            {
-                                c.name = newName;
-                                c.vsSolutionPath = newVs;
-                                c.cursorFolderPath = newCursor;
-                                c.lastUsedAt = (unsigned long long)time(nullptr);
-                                break;
-                            }
-                        }
-                        // Update current selection name if needed
-                        if (g_currentConfigName == g_editingOriginalName)
-                            g_currentConfigName = newName;
-                        SavePrefs();
-                        ImGui::CloseCurrentPopup();
-                        g_showEditConfigPopup = false;
-                        g_editErrorMsg.clear();
-                    }
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(120, 0)))
-            {
-                ImGui::CloseCurrentPopup();
-                g_showEditConfigPopup = false;
-                g_editErrorMsg.clear();
-            }
-            ImGui::EndPopup();
-        }
+        
 
         ImGui::Columns(1);
         
@@ -1879,3 +2022,4 @@ namespace VSInspector
     }
 #endif
 }
+
