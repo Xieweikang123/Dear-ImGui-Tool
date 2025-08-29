@@ -102,6 +102,8 @@ namespace VSInspector
     static float g_dataStreamTime = 0.0f;
     static float g_glitchTime = 0.0f;
     static int g_glitchCounter = 0;
+    
+
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -119,6 +121,8 @@ namespace VSInspector
     static SystemResources g_systemResources;
     static float g_lastResourceUpdate = 0.0f;
     static const float g_resourceUpdateInterval = 2.0f; // 2秒更新一次
+    
+
     
     // Get system resources
     static void UpdateSystemResources()
@@ -1795,28 +1799,13 @@ namespace VSInspector
         
         // 更新动画时间
         static float mainUIParticleTime = 0.0f;
-        static float mainUIScanTime = 0.0f;
-        static float mainUIDataTime = 0.0f;
         mainUIParticleTime += ImGui::GetIO().DeltaTime * 2.0f;
-        mainUIScanTime += ImGui::GetIO().DeltaTime * 50.0f;
-        mainUIDataTime += ImGui::GetIO().DeltaTime * 1.5f;
-        
-        // 绘制背景网格效果
-        for (int i = 0; i < 20; i++)
-        {
-            float x = fmodf(mainUIParticleTime * 30.0f + i * 50.0f, windowSize.x);
-            float y = fmodf(mainUIParticleTime * 20.0f + i * 30.0f, windowSize.y);
-            float alpha = 0.1f + 0.05f * sinf(mainUIParticleTime + i);
-            drawList->AddCircleFilled(
-                ImVec2(canvasPos.x + x, canvasPos.y + y),
-                1.0f,
-                IM_COL32(0, 255, 0, (int)(alpha * 255))
-            );
-        }
         
         // 绘制角落装饰
         float cornerSize = 20.0f;
-        float cornerAlpha = 0.3f + 0.2f * sinf(mainUIParticleTime * 2.0f);
+        static float cornerAnimationTime = 0.0f;
+        cornerAnimationTime += ImGui::GetIO().DeltaTime * 2.0f;
+        float cornerAlpha = 0.3f + 0.2f * sinf(cornerAnimationTime);
         
         // 左上角
         drawList->AddLine(ImVec2(canvasPos.x, canvasPos.y), ImVec2(canvasPos.x + cornerSize, canvasPos.y), 
@@ -1892,6 +1881,7 @@ namespace VSInspector
                 AppendLog("[vs] Auto refresh disabled");
             }
         }
+
         
         ImGui::Separator();
         
