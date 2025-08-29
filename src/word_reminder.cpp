@@ -363,7 +363,7 @@ namespace WordReminder
         int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
         int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
         int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
-        int btnHeight = 32, gap = 10;
+        int btnHeight = 50, gap = 10;
         int totalWidth = w1 + w2 + w3 + gap * 2;
         int startX = rc.right - totalWidth - 14;
         int y = rc.bottom - btnHeight - 12;
@@ -814,7 +814,8 @@ namespace WordReminder
             return;
             
         // 创建主窗口
-        if (!ImGui::Begin("单词学习提醒", &g_state->windowOpen))
+        ImGui::SetNextWindowSize(ImVec2(1280, 720), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("单词学习提醒##MainWindow", &g_state->windowOpen))
         {
             ImGui::End();
             return;
@@ -844,7 +845,7 @@ namespace WordReminder
         if (ImGui::CollapsingHeader("➕ 添加新单词", ImGuiTreeNodeFlags_DefaultOpen))
         {
             const float uiScale = ImGui::GetFontSize() / 16.0f;
-            ImGui::BeginChild("AddWord", ImVec2(0, 260.0f * uiScale), true);
+            ImGui::BeginChild("AddWord", ImVec2(0, 200.0f * uiScale), true);
             
             ImGui::Columns(2, "add_word");
             ImGui::SetColumnWidth(0, 150.0f * uiScale);

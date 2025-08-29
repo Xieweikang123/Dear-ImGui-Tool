@@ -378,6 +378,22 @@ static void DrawUI()
             }
             ImGui::EndMenu();
         }
+        
+        if (ImGui::BeginMenu("日志"))
+        {
+            if (ImGui::MenuItem("打开日志文件"))
+            {
+#ifdef _WIN32
+                // 使用系统默认程序打开日志文件
+                ShellExecuteA(NULL, "open", "DearImGuiExample.log", NULL, NULL, SW_SHOWNORMAL);
+#else
+                // 非Windows平台，尝试使用系统命令打开
+                system("start DearImGuiExample.log");
+#endif
+            }
+            ImGui::EndMenu();
+        }
+        
         ImGui::EndMainMenuBar();
     }
     
@@ -749,6 +765,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    // 启用窗口大小和位置保存功能
+    io.IniFilename = "imgui.ini";
     ImGui::StyleColorsDark();
     const float dpiScale = GetDpiScaleForWindow(hwnd);
     ImGui::GetStyle().ScaleAllSizes(dpiScale);
@@ -959,6 +977,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     // Cleanup
     FeatureManager::GetInstance().Cleanup();
+    // 保存ImGui设置到ini文件
+    ImGui::SaveIniSettingsToDisk("imgui.ini");
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -1039,6 +1059,8 @@ int main(int, char**)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    // 启用窗口大小和位置保存功能
+    io.IniFilename = "imgui.ini";
     ImGui::StyleColorsDark();
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -1209,6 +1231,8 @@ int main(int, char**)
     }
 
     FeatureManager::GetInstance().Cleanup();
+    // 保存ImGui设置到ini文件
+    ImGui::SaveIniSettingsToDisk("imgui.ini");
 #ifdef IMGUI_USE_OPENGL2
     ImGui_ImplOpenGL2_Shutdown();
 #else
