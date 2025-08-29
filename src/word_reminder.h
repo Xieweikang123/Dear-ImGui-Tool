@@ -14,10 +14,11 @@ namespace WordReminder
         std::string pronunciation;
         std::chrono::system_clock::time_point remindTime;
         bool isActive;
+        bool isMastered;  // 新增：是否已掌握
         int reviewCount;
         std::chrono::system_clock::time_point lastReview;
         
-        WordEntry() : isActive(true), reviewCount(0) {}
+        WordEntry() : isActive(true), isMastered(false), reviewCount(0) {}
     };
     
     // 初始化功能模块
@@ -47,9 +48,21 @@ namespace WordReminder
     // 标记单词为已复习
     void MarkAsReviewed(int index);
     
+    // 标记单词为已掌握
+    void MarkAsMastered(int index);
+    
+    // 取消掌握状态
+    void UnmarkAsMastered(int index);
+    
     // 检查是否有需要提醒的单词
     bool HasReminderToShow();
     
     // 获取需要提醒的单词列表
     std::vector<WordEntry> GetDueWords();
+    
+    // 获取已掌握的单词数量
+    int GetMasteredWordsCount();
+    
+    // 获取总单词数量
+    int GetTotalWordsCount();
 }

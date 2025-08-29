@@ -112,6 +112,7 @@ namespace WordReminder
                      << entry.pronunciation << "|"
                      << std::chrono::system_clock::to_time_t(entry.remindTime) << "|"
                      << entry.isActive << "|"
+                     << entry.isMastered << "|"
                      << entry.reviewCount << "|"
                      << std::chrono::system_clock::to_time_t(entry.lastReview) << "\n";
             }
@@ -140,8 +141,9 @@ namespace WordReminder
                 std::istringstream iss(line);
                 std::string word, meaning, pronunciation;
                 time_t remindTime, lastReview;
-                bool isActive;
-                int reviewCount;
+                bool isActive = true;
+                bool isMastered = false;  // 默认未掌握
+                int reviewCount = 0;
                 
                 std::getline(iss, word, '|');
                 std::getline(iss, meaning, '|');
@@ -150,6 +152,19 @@ namespace WordReminder
                 iss.ignore(); // 跳过分隔符
                 iss >> isActive;
                 iss.ignore(); // 跳过分隔符
+                
+                // 尝试读取isMastered字段，如果失败则使用默认值false
+                if (iss >> isMastered)
+                {
+                    iss.ignore(); // 跳过分隔符
+                }
+                else
+                {
+                    // 如果读取失败，说明是旧格式数据，重置流并继续
+                    iss.clear();
+                    isMastered = false;
+                }
+                
                 iss >> reviewCount;
                 iss.ignore(); // 跳过分隔符
                 iss >> lastReview;
@@ -160,6 +175,7 @@ namespace WordReminder
                 entry.pronunciation = pronunciation;
                 entry.remindTime = std::chrono::system_clock::from_time_t(remindTime);
                 entry.isActive = isActive;
+                entry.isMastered = isMastered;
                 entry.reviewCount = reviewCount;
                 entry.lastReview = std::chrono::system_clock::from_time_t(lastReview);
                 
@@ -193,7 +209,7 @@ namespace WordReminder
         
         for (const auto& entry : g_state->words)
         {
-            if (entry.isActive && entry.remindTime <= now)
+            if (entry.isActive && !entry.isMastered && entry.remindTime <= now)
             {
                 g_state->dueWords++;
             }
@@ -819,6 +835,52 @@ namespace WordReminder
         SaveWords();
     }
     
+    void MarkAsMastered(int index)
+    {
+        if (!g_state || index < 0 || index >= static_cast<int>(g_state->words.size())) return;
+        
+        auto& entry = g_state->words[index];
+        entry.isMastered = true;
+        entry.lastReview = std::chrono::system_clock::now();
+        
+        SaveWords();
+    }
+    
+    void UnmarkAsMastered(int index)
+    {
+        if (!g_state || index < 0 || index >= static_cast<int>(g_state->words.size())) return;
+        
+        auto& entry = g_state->words[index];
+        entry.isMastered = false;
+        entry.lastReview = std::chrono::system_clock::now();
+        
+        // 重新设置提醒时间为5分钟后
+        entry.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(300);
+        
+        SaveWords();
+    }
+    
+    int GetMasteredWordsCount()
+    {
+        if (!g_state) return 0;
+        
+        int count = 0;
+        for (const auto& entry : g_state->words)
+        {
+            if (entry.isMastered)
+            {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    int GetTotalWordsCount()
+    {
+        if (!g_state) return 0;
+        return static_cast<int>(g_state->words.size());
+    }
+    
     bool HasReminderToShow()
     {
         if (!g_state || !g_state->autoShowReminders) return false;
@@ -829,7 +891,7 @@ namespace WordReminder
         auto now = std::chrono::system_clock::now();
         for (const auto& entry : g_state->words)
         {
-            if (entry.isActive && entry.remindTime <= now)
+            if (entry.isActive && !entry.isMastered && entry.remindTime <= now)
             {
                 return true;
             }
@@ -845,7 +907,7 @@ namespace WordReminder
         auto now = std::chrono::system_clock::now();
         for (const auto& entry : g_state->words)
         {
-            if (entry.isActive && entry.remindTime <= now)
+            if (entry.isActive && !entry.isMastered && entry.remindTime <= now)
             {
                 result.push_back(entry);
             }
@@ -869,19 +931,21 @@ namespace WordReminder
         // 统计信息区域
         {
             const float uiScale = ImGui::GetFontSize() / 16.0f;
-            ImGui::BeginChild("Stats", ImVec2(0, 110.0f * uiScale), false);
+            ImGui::BeginChild("Stats", ImVec2(0, 60.0f * uiScale), false);
         }
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "📊 学习统计");
         ImGui::Separator();
         
-        ImGui::Columns(4, "stats");
-        ImGui::Text("总单词数: %d", g_state->totalWords);
+        ImGui::Columns(5, "stats");
+        ImGui::Text("总单词数: %d", GetTotalWordsCount());
+        ImGui::NextColumn();
+        ImGui::Text("已掌握: %d", GetMasteredWordsCount());
         ImGui::NextColumn();
         ImGui::Text("今日复习: %d", g_state->reviewedToday);
         ImGui::NextColumn();
         ImGui::Text("待复习: %d", g_state->dueWords);
         ImGui::NextColumn();
-        ImGui::Text("活跃单词: %d", g_state->dueWords);
+        ImGui::Text("学习中: %d", GetTotalWordsCount() - GetMasteredWordsCount());
         ImGui::Columns(1);
         ImGui::EndChild();
         
@@ -987,12 +1051,25 @@ namespace WordReminder
                     
                     // 检查是否过期需要复习
                     auto now = std::chrono::system_clock::now();
-                    bool isDue = entry.isActive && entry.remindTime <= now;
+                    bool isDue = entry.isActive && !entry.isMastered && entry.remindTime <= now;
                     
-                    if (isDue)
+                    // 显示掌握状态
+                    if (entry.isMastered)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.8f, 0.2f, 1.0f));
+                        ImGui::Text("✅ 已掌握");
+                        ImGui::PopStyleColor();
+                    }
+                    else if (isDue)
                     {
                         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
                         ImGui::Text("需要复习");
+                        ImGui::PopStyleColor();
+                    }
+                    else
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+                        ImGui::Text("学习中");
                         ImGui::PopStyleColor();
                     }
                     
@@ -1003,9 +1080,16 @@ namespace WordReminder
                     
                     ImGui::TextWrapped("释义: %s", entry.meaning.c_str());
                     
-                    ImGui::Text("复习次数: %d | 下次提醒: %s", 
-                               entry.reviewCount, 
-                               TimeUntilNow(entry.remindTime).c_str());
+                    if (entry.isMastered)
+                    {
+                        ImGui::Text("复习次数: %d | 状态: 已掌握", entry.reviewCount);
+                    }
+                    else
+                    {
+                        ImGui::Text("复习次数: %d | 下次提醒: %s", 
+                                   entry.reviewCount, 
+                                   TimeUntilNow(entry.remindTime).c_str());
+                    }
                     
                     // 操作按钮
                     if (isDue)
@@ -1014,6 +1098,24 @@ namespace WordReminder
                         if (ImGui::Button("标记已复习"))
                         {
                             MarkAsReviewed(i);
+                        }
+                    }
+                    
+                    // 掌握状态按钮
+                    if (entry.isMastered)
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::Button("取消掌握"))
+                        {
+                            UnmarkAsMastered(i);
+                        }
+                    }
+                    else
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::Button("标记已掌握"))
+                        {
+                            MarkAsMastered(i);
                         }
                     }
                     
@@ -1036,12 +1138,16 @@ namespace WordReminder
                         continue;
                     }
                     
-                    ImGui::SameLine();
-                    if (ImGui::Button("5秒后提醒"))
+                    // 只有未掌握的单词才显示提醒按钮
+                    if (!entry.isMastered)
                     {
-                        auto& e = g_state->words[i];
-                        e.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(5);
-                        SaveWords();
+                        ImGui::SameLine();
+                        if (ImGui::Button("5秒后提醒"))
+                        {
+                            auto& e = g_state->words[i];
+                            e.remindTime = std::chrono::system_clock::now() + std::chrono::seconds(5);
+                            SaveWords();
+                        }
                     }
                     
                     // 内联编辑区域
