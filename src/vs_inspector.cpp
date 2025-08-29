@@ -1301,9 +1301,30 @@ namespace VSInspector
                 {
                     // Processed by DetectProcessAndGetPath
                 }
-                else if (DetectProcessAndGetPath(exeLower, {"weixin.exe", "wechat.exe", "wechatappex.exe"}, pe.th32ProcessID, foundWechatPath, foundWechatRunning, "wechat"))
+                else if (exeLower == "weixin.exe" || exeLower == "wechat.exe")
                 {
-                    // Processed by DetectProcessAndGetPath
+                    // 优先检测微信主程序
+                    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+                    if (hProc)
+                    {
+                        char buf[MAX_PATH];
+                        DWORD sz = (DWORD)sizeof(buf);
+                        if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
+                            foundWechatPath.assign(buf, sz);
+                        CloseHandle(hProc);
+                    }
+                    foundWechatRunning = true;
+                    AppendLog(std::string("[wechat] found main process ") + exeLower + " pid=" + std::to_string((unsigned long)pe.th32ProcessID) +
+                             (foundWechatPath.empty() ? " path=<unknown>" : " path=" + foundWechatPath));
+                }
+                else if (exeLower == "wechatappex.exe")
+                {
+                    // 检测到微信插件进程，但不保存路径（只用于状态检测）
+                    if (!foundWechatRunning)
+                    {
+                        foundWechatRunning = true;
+                        AppendLog(std::string("[wechat] found plugin process wechatappex.exe pid=") + std::to_string((unsigned long)pe.th32ProcessID));
+                    }
                 }
             } while (Process32Next(hSnap, &pe));
         }
