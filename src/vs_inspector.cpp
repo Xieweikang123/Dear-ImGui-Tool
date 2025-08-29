@@ -52,6 +52,7 @@ namespace VSInspector
     static bool g_feishuRunning = false;
     static std::string g_wechatPath;
     static bool g_wechatRunning = false;
+    static std::string g_currentWechatPath;  // 当前检测到的微信路径
     static std::mutex g_vsMutexVS;
 
     // Configuration structure
@@ -801,6 +802,7 @@ namespace VSInspector
         
         // Fallback: Try to find WeChat installation
         std::vector<std::string> wechatPaths = {
+            "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe",
             "C:\\Users\\" + GetEnvU8("USERNAME") + "\\AppData\\Local\\Tencent\\WeChat\\WeChat.exe",
             "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe",
             "C:\\Program Files (x86)\\Tencent\\WeChat\\WeChat.exe"
@@ -1228,7 +1230,7 @@ namespace VSInspector
                 {
                     // Processed by DetectProcessAndGetPath
                 }
-                else if (DetectProcessAndGetPath(exeLower, {"wechat.exe", "wechatappex.exe"}, pe.th32ProcessID, foundWechatPath, foundWechatRunning, "wechat"))
+                else if (DetectProcessAndGetPath(exeLower, {"weixin.exe", "wechat.exe", "wechatappex.exe"}, pe.th32ProcessID, foundWechatPath, foundWechatRunning, "wechat"))
                 {
                     // Processed by DetectProcessAndGetPath
                 }
@@ -1510,12 +1512,13 @@ namespace VSInspector
                 g_feishuPath = foundFeishuPath;
             }
             g_feishuRunning = foundFeishuRunning;
-            // 只有在检测到微信运行时才更新路径，避免覆盖已保存的路径
-            if (foundWechatRunning)
-            {
-                g_wechatPath = foundWechatPath;
-            }
+            // 微信路径不自动更新，只有用户手动勾选时才保存
+            // if (foundWechatRunning)
+            // {
+            //     g_wechatPath = foundWechatPath;
+            // }
             g_wechatRunning = foundWechatRunning;
+            g_currentWechatPath = foundWechatPath;  // 更新当前检测到的路径
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
         AppendLog(std::string("[cursor] RefreshCursorInstances: end, instances=") + std::to_string((int)g_cursorList.size()));
@@ -1596,6 +1599,7 @@ namespace VSInspector
         bool localFeishuRunning;
         std::string localWechatPath;
         bool localWechatRunning;
+        std::string localCurrentWechatPath;
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             local = g_vsList;
@@ -1604,6 +1608,7 @@ namespace VSInspector
             localFeishuRunning = g_feishuRunning;
             localWechatPath = g_wechatPath;
             localWechatRunning = g_wechatRunning;
+            localCurrentWechatPath = g_currentWechatPath;
         }
         
         // VS Instances
@@ -1746,17 +1751,40 @@ namespace VSInspector
             ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "✗ Not Running");
         }
         
-        if (!localWechatPath.empty())
+        // 显示当前检测到的微信路径（如果有的话）
+        if (localWechatRunning && !localCurrentWechatPath.empty())
         {
-            ImGui::TextWrapped("[Path] %s", localWechatPath.c_str());
+            ImGui::TextWrapped("[Path] %s", localCurrentWechatPath.c_str());
             // 只有当微信正在运行且路径与已保存的路径匹配时才勾选
-            bool checked = localWechatRunning && (g_wechatPath == localWechatPath);
+            bool checked = (g_wechatPath == localCurrentWechatPath);
             if (ImGui::Checkbox("[Save WeChat Path]", &checked))
             {
                 if (checked)
                 {
                     // 勾选时保存路径
-                    g_wechatPath = localWechatPath;
+                    g_wechatPath = localCurrentWechatPath;
+                }
+                else
+                {
+                    // 取消勾选时清空保存的路径
+                    g_wechatPath.clear();
+                }
+            }
+        }
+        else if (localWechatRunning)
+        {
+            ImGui::TextWrapped("[Path] <unknown>");
+            // 微信运行但路径未知时，复选框状态取决于是否已有保存的路径
+            bool checked = !g_wechatPath.empty();
+            if (ImGui::Checkbox("[Save WeChat Path]", &checked))
+            {
+                if (checked)
+                {
+                    // 勾选时尝试保存当前检测到的路径（如果有的话）
+                    if (!localCurrentWechatPath.empty())
+                    {
+                        g_wechatPath = localCurrentWechatPath;
+                    }
                 }
                 else
                 {
@@ -1846,16 +1874,9 @@ namespace VSInspector
         }
         
         // Launch WeChat
-        if (!g_wechatPath.empty())
+        if (ImGui::Button("[Launch WeChat]"))
         {
-            if (ImGui::Button("[Launch WeChat]"))
-            {
-                LaunchWechat();
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("Save WeChat path first");
+            LaunchWechat();
         }
         
                  // Third column (only in wide layout): Configuration Management
