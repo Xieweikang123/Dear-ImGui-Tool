@@ -869,7 +869,7 @@ namespace WordReminder
         // 统计信息区域
         {
             const float uiScale = ImGui::GetFontSize() / 16.0f;
-            ImGui::BeginChild("Stats", ImVec2(0, 110.0f * uiScale), true);
+            ImGui::BeginChild("Stats", ImVec2(0, 110.0f * uiScale), false);
         }
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "📊 学习统计");
         ImGui::Separator();
@@ -890,7 +890,7 @@ namespace WordReminder
         if (ImGui::CollapsingHeader("➕ 添加新单词", ImGuiTreeNodeFlags_DefaultOpen))
         {
             const float uiScale = ImGui::GetFontSize() / 16.0f;
-            ImGui::BeginChild("AddWord", ImVec2(0, 200.0f * uiScale), true);
+            ImGui::BeginChild("AddWord", ImVec2(0, 200.0f * uiScale), false);
             
             ImGui::Columns(2, "add_word");
             ImGui::SetColumnWidth(0, 150.0f * uiScale);
@@ -973,8 +973,6 @@ namespace WordReminder
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("📚 单词列表", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::BeginChild("WordList", ImVec2(0, 300), true);
-            
             if (g_state->words.empty())
             {
                 ImGui::TextDisabled("还没有添加任何单词");
@@ -1074,8 +1072,6 @@ namespace WordReminder
                     ImGui::PopID();
                 }
             }
-            
-            ImGui::EndChild();
         }
         
         // 编辑弹窗
