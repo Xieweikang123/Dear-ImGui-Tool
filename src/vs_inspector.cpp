@@ -1559,10 +1559,20 @@ namespace VSInspector
         if (!localFeishuPath.empty())
         {
             ImGui::TextWrapped("[Path] %s", localFeishuPath.c_str());
-            bool checked = !g_feishuPath.empty();
+            // 只有当飞书正在运行且路径与已保存的路径匹配时才勾选
+            bool checked = localFeishuRunning && (g_feishuPath == localFeishuPath);
             if (ImGui::Checkbox("[Save Feishu Path]", &checked))
             {
-                g_feishuPath = checked ? localFeishuPath : std::string();
+                if (checked)
+                {
+                    // 勾选时保存路径
+                    g_feishuPath = localFeishuPath;
+                }
+                else
+                {
+                    // 取消勾选时清空保存的路径
+                    g_feishuPath.clear();
+                }
             }
         }
         ImGui::EndGroup();
