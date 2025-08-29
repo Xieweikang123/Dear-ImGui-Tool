@@ -50,6 +50,8 @@ namespace VSInspector
     static std::vector<CursorInstance> g_cursorList;
     static std::string g_feishuPath;
     static bool g_feishuRunning = false;
+    static std::string g_wechatPath;
+    static bool g_wechatRunning = false;
     static std::mutex g_vsMutexVS;
 
     // Configuration structure
@@ -59,6 +61,7 @@ namespace VSInspector
         std::string vsSolutionPath;
         std::string cursorFolderPath;
         std::string feishuPath;
+        std::string wechatPath;
         unsigned long long createdAt = 0;    // unix time seconds
         unsigned long long lastUsedAt = 0;   // unix time seconds
     };
@@ -71,9 +74,14 @@ namespace VSInspector
     static std::string g_currentConfigName;
     static bool g_prefsLoaded = false;  // Track if prefs have been loaded
 
-         // 用于主界面配置名称输入框的全局变量
-     static char g_mainConfigNameBuf[256] = {0};
-     static bool g_shouldFillConfigName = false;
+             // 用于主界面配置名称输入框的全局变量
+    static char g_mainConfigNameBuf[256] = {0};
+    static bool g_shouldFillConfigName = false;
+    
+    // 自动刷新相关变量
+    static bool g_autoRefreshEnabled = true;
+    static float g_lastRefreshTime = 0.0f;
+    static const float g_autoRefreshInterval = 5.0f; // 5秒间隔
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -82,6 +90,33 @@ namespace VSInspector
     static bool LaunchVSWithSolution(const std::string& slnPath);
     static bool LaunchCursorWithFolder(const std::string& folderPath);
     static bool LaunchFeishu();
+    static bool LaunchWechat();
+
+    // Generic process detection helper
+    static bool DetectProcessAndGetPath(const std::string& exeLower, const std::vector<std::string>& processNames, 
+                                       DWORD processId, std::string& outPath, bool& outRunning, const std::string& logPrefix)
+    {
+        for (const auto& name : processNames)
+        {
+            if (exeLower == name)
+            {
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+                if (hProc)
+                {
+                    char buf[MAX_PATH];
+                    DWORD sz = (DWORD)sizeof(buf);
+                    if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
+                        outPath.assign(buf, sz);
+                    CloseHandle(hProc);
+                }
+                outRunning = true;
+                AppendLog(std::string("[") + logPrefix + "] found " + exeLower + " pid=" + std::to_string((unsigned long)processId) + 
+                         (outPath.empty() ? " path=<unknown>" : " path=" + outPath));
+                return true;
+            }
+        }
+        return false;
+    }
 
     // File dialog helpers (ANSI)
     static bool ShowOpenFileDialog(char* outPath, size_t outSize, const char* filter, const char* title)
@@ -176,6 +211,7 @@ namespace VSInspector
                     config.vsSolutionPath = g_selectedSlnPath;
                     config.cursorFolderPath = g_selectedCursorFolder;
                     config.feishuPath = g_feishuPath;
+                    config.wechatPath = g_wechatPath;
                     if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
                     found = true;
                     break;
@@ -188,6 +224,7 @@ namespace VSInspector
                 newConfig.vsSolutionPath = g_selectedSlnPath;
                 newConfig.cursorFolderPath = g_selectedCursorFolder;
                 newConfig.feishuPath = g_feishuPath;
+                newConfig.wechatPath = g_wechatPath;
                 newConfig.createdAt = (unsigned long long)time(nullptr);
                 g_savedConfigs.push_back(newConfig);
             }
@@ -205,6 +242,7 @@ namespace VSInspector
             ofs << "      \"vs\": \"" << JsonEscape(c.vsSolutionPath) << "\",\n";
             ofs << "      \"cursor\": \"" << JsonEscape(c.cursorFolderPath) << "\",\n";
             ofs << "      \"feishu\": \"" << JsonEscape(c.feishuPath) << "\",\n";
+            ofs << "      \"wechat\": \"" << JsonEscape(c.wechatPath) << "\",\n";
             ofs << "      \"createdAt\": " << c.createdAt << ",\n";
             ofs << "      \"lastUsedAt\": " << c.lastUsedAt << "\n";
             ofs << "    }" << (i + 1 < g_savedConfigs.size() ? ",\n" : "\n");
@@ -214,6 +252,7 @@ namespace VSInspector
         if (!g_selectedSlnPath.empty()) AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
         if (!g_selectedCursorFolder.empty()) AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
         if (!g_feishuPath.empty()) AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
+        if (!g_wechatPath.empty()) AppendLog("[prefs] saved WeChat path: " + g_wechatPath);
     }
 
     static void SavePrefsToJson()
@@ -273,10 +312,10 @@ namespace VSInspector
                         std::string k; if (!ParseJsonString(content, pos, k)) { pos = content.size(); break; }
                         SkipWs(content, pos); if (pos >= content.size() || content[pos] != ':') { pos = content.size(); break; } pos++;
                         SkipWs(content, pos);
-                                                 if (k == "name" || k == "vs" || k == "cursor" || k == "feishu")
+                                                 if (k == "name" || k == "vs" || k == "cursor" || k == "feishu" || k == "wechat")
                          {
                              std::string v; if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
-                             if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else if (k == "cursor") c.cursorFolderPath = v; else c.feishuPath = v;
+                             if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else if (k == "cursor") c.cursorFolderPath = v; else if (k == "feishu") c.feishuPath = v; else c.wechatPath = v;
                          }
                         else if (k == "createdAt" || k == "lastUsedAt")
                         {
@@ -352,6 +391,7 @@ namespace VSInspector
              ofs << "sln=" << config.vsSolutionPath << "\n";
              ofs << "cursor=" << config.cursorFolderPath << "\n";
              ofs << "feishu=" << config.feishuPath << "\n";
+             ofs << "wechat=" << config.wechatPath << "\n";
              ofs << "created=" << config.createdAt << "\n";
              ofs << "used=" << config.lastUsedAt << "\n";
             ofs << "---\n";  // Separator between configs
@@ -364,6 +404,8 @@ namespace VSInspector
              AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
          if (!g_feishuPath.empty())
              AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
+         if (!g_wechatPath.empty())
+             AppendLog("[prefs] saved WeChat path: " + g_wechatPath);
     }
 
     static bool LoadPrefsFromTxt()
@@ -406,6 +448,10 @@ namespace VSInspector
              else if (line.rfind("feishu=", 0) == 0)
              {
                  currentConfig.feishuPath = line.substr(7);
+             }
+             else if (line.rfind("wechat=", 0) == 0)
+             {
+                 currentConfig.wechatPath = line.substr(7);
              }
             else if (line.rfind("created=", 0) == 0)
             {
@@ -456,6 +502,7 @@ namespace VSInspector
                                  g_selectedSlnPath = config.vsSolutionPath;
                  g_selectedCursorFolder = config.cursorFolderPath;
                  g_feishuPath = config.feishuPath;
+                 g_wechatPath = config.wechatPath;
                  // Keep the multi-select set in sync with single selection
                  g_selectedCursorFolders.clear();
                  if (!g_selectedCursorFolder.empty())
@@ -468,6 +515,8 @@ namespace VSInspector
                      AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
                  if (!g_feishuPath.empty())
                      AppendLog("[prefs] loaded Feishu path: " + g_feishuPath);
+                 if (!g_wechatPath.empty())
+                     AppendLog("[prefs] loaded WeChat path: " + g_wechatPath);
                 return;
             }
         }
@@ -513,6 +562,7 @@ namespace VSInspector
                                          if (!inc.vsSolutionPath.empty()) cur.vsSolutionPath = inc.vsSolutionPath;
                      if (!inc.cursorFolderPath.empty()) cur.cursorFolderPath = inc.cursorFolderPath;
                      if (!inc.feishuPath.empty()) cur.feishuPath = inc.feishuPath;
+                     if (!inc.wechatPath.empty()) cur.wechatPath = inc.wechatPath;
                     break;
                 }
             }
@@ -713,6 +763,84 @@ namespace VSInspector
         {
             DWORD error = GetLastError();
             AppendLog("[launch] Feishu launch failed, error: " + std::to_string(error));
+            return false;
+        }
+    }
+
+    static bool LaunchWechat()
+    {
+        // Use saved path if available
+        if (!g_wechatPath.empty())
+        {
+            std::string wechatExePath = g_wechatPath;
+            if (fs::exists(wechatExePath))
+            {
+                std::string cmd = "\"" + wechatExePath + "\"";
+                AppendLog("[launch] WeChat command: " + cmd);
+                
+                STARTUPINFOA si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_SHOW;
+                
+                if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+                {
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    AppendLog("[launch] WeChat launched successfully");
+                    return true;
+                }
+                else
+                {
+                    DWORD error = GetLastError();
+                    AppendLog("[launch] WeChat launch failed, error: " + std::to_string(error));
+                    return false;
+                }
+            }
+        }
+        
+        // Fallback: Try to find WeChat installation
+        std::vector<std::string> wechatPaths = {
+            "C:\\Users\\" + GetEnvU8("USERNAME") + "\\AppData\\Local\\Tencent\\WeChat\\WeChat.exe",
+            "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe",
+            "C:\\Program Files (x86)\\Tencent\\WeChat\\WeChat.exe"
+        };
+        
+        std::string wechatExePath;
+        for (const auto& path : wechatPaths)
+        {
+            if (fs::exists(path))
+            {
+                wechatExePath = path;
+                break;
+            }
+        }
+        
+        if (wechatExePath.empty())
+        {
+            AppendLog("[launch] WeChat not found in common locations");
+            return false;
+        }
+        
+        std::string cmd = "\"" + wechatExePath + "\"";
+        AppendLog("[launch] WeChat command: " + cmd);
+        
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOW;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            AppendLog("[launch] WeChat launched successfully");
+            return true;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            AppendLog("[launch] WeChat launch failed, error: " + std::to_string(error));
             return false;
         }
     }
@@ -1036,6 +1164,8 @@ namespace VSInspector
         std::vector<CursorInstance> foundCursor;
         std::string foundFeishuPath;
         bool foundFeishuRunning = false;
+        std::string foundWechatPath;
+        bool foundWechatRunning = false;
 
         // Load persisted prefs once per refresh to show defaults
         if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
@@ -1094,19 +1224,13 @@ namespace VSInspector
                     AppendLog(std::string("[cursor] found cursor.exe pid=") + std::to_string((unsigned long)cinst.pid) + (cinst.exePath.empty()?" path=<unknown>":std::string(" path=") + cinst.exePath));
                     foundCursor.push_back(cinst);
                 }
-                else if (exeLower == std::string("feishu.exe") || exeLower == std::string("lark.exe"))
+                else if (DetectProcessAndGetPath(exeLower, {"feishu.exe", "lark.exe"}, pe.th32ProcessID, foundFeishuPath, foundFeishuRunning, "feishu"))
                 {
-                    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-                    if (hProc)
-                    {
-                        char buf[MAX_PATH];
-                        DWORD sz = (DWORD)sizeof(buf);
-                        if (QueryFullProcessImageNameA(hProc, 0, buf, &sz))
-                            foundFeishuPath.assign(buf, sz);
-                        CloseHandle(hProc);
-                    }
-                    foundFeishuRunning = true;
-                    AppendLog(std::string("[feishu] found ") + exeLower + std::string(" pid=") + std::to_string((unsigned long)pe.th32ProcessID) + (foundFeishuPath.empty()?" path=<unknown>":std::string(" path=") + foundFeishuPath));
+                    // Processed by DetectProcessAndGetPath
+                }
+                else if (DetectProcessAndGetPath(exeLower, {"wechat.exe", "wechatappex.exe"}, pe.th32ProcessID, foundWechatPath, foundWechatRunning, "wechat"))
+                {
+                    // Processed by DetectProcessAndGetPath
                 }
             } while (Process32Next(hSnap, &pe));
         }
@@ -1386,10 +1510,17 @@ namespace VSInspector
                 g_feishuPath = foundFeishuPath;
             }
             g_feishuRunning = foundFeishuRunning;
+            // 只有在检测到微信运行时才更新路径，避免覆盖已保存的路径
+            if (foundWechatRunning)
+            {
+                g_wechatPath = foundWechatPath;
+            }
+            g_wechatRunning = foundWechatRunning;
         }
         AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
         AppendLog(std::string("[cursor] RefreshCursorInstances: end, instances=") + std::to_string((int)g_cursorList.size()));
         AppendLog(std::string("[feishu] Status: ") + (g_feishuRunning ? "Running" : "Not running") + (g_feishuPath.empty() ? "" : " Path: " + g_feishuPath));
+        AppendLog(std::string("[wechat] Status: ") + (g_wechatRunning ? "Running" : "Not running") + (g_wechatPath.empty() ? "" : " Path: " + g_wechatPath));
         for (const auto& inst : g_vsList)
         {
             AppendLog(std::string("[vs] summary pid=") + std::to_string((unsigned long)inst.pid)
@@ -1404,6 +1535,14 @@ namespace VSInspector
         // Ensure preferences are loaded on first UI draw
         EnsurePrefsLoaded();
         
+        // 自动刷新逻辑
+        float currentTime = ImGui::GetTime();
+        if (g_autoRefreshEnabled && (currentTime - g_lastRefreshTime) >= g_autoRefreshInterval)
+        {
+            Refresh();
+            g_lastRefreshTime = currentTime;
+        }
+        
         // 设置窗口为可调整大小，并设置最小尺寸
         ImGui::SetNextWindowSizeConstraints(ImVec2(800, 600), ImVec2(FLT_MAX, FLT_MAX));
         ImGui::Begin(" VS & Cursor & Feishu Manager 🚀", nullptr, ImGuiWindowFlags_None);
@@ -1415,6 +1554,19 @@ namespace VSInspector
         {
             ReplaceTool::AppendLog("[vs] UI: Refresh clicked");
             Refresh();
+            g_lastRefreshTime = currentTime; // 更新最后刷新时间
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Auto Refresh", &g_autoRefreshEnabled))
+        {
+            if (g_autoRefreshEnabled)
+            {
+                AppendLog("[vs] Auto refresh enabled");
+            }
+            else
+            {
+                AppendLog("[vs] Auto refresh disabled");
+            }
         }
         
         ImGui::Separator();
@@ -1442,12 +1594,16 @@ namespace VSInspector
         std::vector<CursorInstance> localCursor;
         std::string localFeishuPath;
         bool localFeishuRunning;
+        std::string localWechatPath;
+        bool localWechatRunning;
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
             local = g_vsList;
             localCursor = g_cursorList;
             localFeishuPath = g_feishuPath;
             localFeishuRunning = g_feishuRunning;
+            localWechatPath = g_wechatPath;
+            localWechatRunning = g_wechatRunning;
         }
         
         // VS Instances
@@ -1577,6 +1733,40 @@ namespace VSInspector
         }
         ImGui::EndGroup();
         
+        // WeChat Status
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "WeChat Status");
+        ImGui::BeginGroup();
+        if (localWechatRunning)
+        {
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "✓ Running");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "✗ Not Running");
+        }
+        
+        if (!localWechatPath.empty())
+        {
+            ImGui::TextWrapped("[Path] %s", localWechatPath.c_str());
+            // 只有当微信正在运行且路径与已保存的路径匹配时才勾选
+            bool checked = localWechatRunning && (g_wechatPath == localWechatPath);
+            if (ImGui::Checkbox("[Save WeChat Path]", &checked))
+            {
+                if (checked)
+                {
+                    // 勾选时保存路径
+                    g_wechatPath = localWechatPath;
+                }
+                else
+                {
+                    // 取消勾选时清空保存的路径
+                    g_wechatPath.clear();
+                }
+            }
+        }
+        ImGui::EndGroup();
+        
         // Middle/Right column: Current Status & Quick Actions
         ImGui::NextColumn();
         ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[Current Status & Actions]");
@@ -1655,6 +1845,19 @@ namespace VSInspector
             ImGui::TextDisabled("Save Feishu path first");
         }
         
+        // Launch WeChat
+        if (!g_wechatPath.empty())
+        {
+            if (ImGui::Button("[Launch WeChat]"))
+            {
+                LaunchWechat();
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Save WeChat path first");
+        }
+        
                  // Third column (only in wide layout): Configuration Management
          if (useWideLayout)
          {
@@ -1727,6 +1930,8 @@ namespace VSInspector
                          ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
                      if (!config.feishuPath.empty())
                          ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
+                     if (!config.wechatPath.empty())
+                         ImGui::TextWrapped("WeChat: %s", config.wechatPath.c_str());
                      
                      if (ImGui::Button(("[Load]##" + config.name).c_str()))
                      {
