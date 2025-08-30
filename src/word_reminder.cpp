@@ -286,6 +286,11 @@ namespace WordReminder
     static bool g_darkMode = false;
     static BYTE g_animOpacity = 0; // 0-255，用于淡入
     static HBRUSH g_btnBgBrush = nullptr; // 为按钮提供与父窗口一致的背景
+    static POINT g_windowPosition = {-1, -1}; // 记住窗口位置，-1表示使用默认位置
+    
+    // 状态管理变量 - 用于跟踪当前显示的单词列表
+    static std::vector<WordEntry> g_currentDisplayedWords; // 当前正在窗口上显示的单词列表
+    static bool g_windowShouldBeVisible = false; // 窗口是否应该可见
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
 
@@ -464,6 +469,15 @@ namespace WordReminder
                 LayoutButtons(hwnd);
                 return 0;
             }
+            case WM_MOVE:
+            {
+                // 记住用户拖拽后的窗口位置
+                RECT rc;
+                GetWindowRect(hwnd, &rc);
+                g_windowPosition.x = rc.left;
+                g_windowPosition.y = rc.top;
+                return 0;
+            }
             case WM_COMMAND:
             {
                 int id = LOWORD(wParam);
@@ -471,11 +485,11 @@ namespace WordReminder
                 {
                     MarkAllDueReviewed();
                     g_state->showReminderPopup = false;
-                    DestroyWindow(hwnd);
+                    ShowWindow(hwnd, SW_HIDE);
+                    g_windowShouldBeVisible = false;
                     
-                    // 检查是否还有其他需要复习的单词
-                    auto remainingDueWords = GetDueWords();
-                    if (!remainingDueWords.empty())
+                    // 检查是否还有其他需要复习的单词，如果有则立即显示新窗口
+                    if (HasReminderToShow())
                     {
                         g_state->showReminderPopup = true;
                     }
@@ -485,11 +499,11 @@ namespace WordReminder
                 {
                     SnoozeAllDueFiveMinutes();
                     g_state->showReminderPopup = false;
-                    DestroyWindow(hwnd);
+                    ShowWindow(hwnd, SW_HIDE);
+                    g_windowShouldBeVisible = false;
                     
-                    // 检查是否还有其他需要复习的单词
-                    auto remainingDueWords = GetDueWords();
-                    if (!remainingDueWords.empty())
+                    // 检查是否还有其他需要复习的单词，如果有则立即显示新窗口
+                    if (HasReminderToShow())
                     {
                         g_state->showReminderPopup = true;
                     }
@@ -498,7 +512,8 @@ namespace WordReminder
                 if (id == BTN_CLOSE)
                 {
                     g_state->showReminderPopup = false;
-                    DestroyWindow(hwnd);
+                    ShowWindow(hwnd, SW_HIDE);
+                    g_windowShouldBeVisible = false;
                     return 0;
                 }
                 break;
@@ -509,51 +524,70 @@ namespace WordReminder
                 HDC hdc = BeginPaint(hwnd, &ps);
                 RECT rc;
                 GetClientRect(hwnd, &rc);
-                // 背景
+                
+                // 双缓冲实现 - 创建内存DC和位图
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP memBitmap = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+                HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+                
+                // 背景 - 绘制到内存DC
                 COLORREF clrWnd = g_darkMode ? RGB(32, 32, 36) : RGB(245, 246, 248);
                 HBRUSH bgWnd = CreateSolidBrush(clrWnd);
-                FillRect(hdc, &rc, bgWnd);
+                FillRect(memDC, &rc, bgWnd);
                 DeleteObject(bgWnd);
 
-                // 内容卡片
+                // 内容卡片 - 绘制到内存DC
                 RECT content = { rc.left + 14, rc.top + 14, rc.right - 14, rc.bottom - 58 };
                 COLORREF clrCard = g_darkMode ? RGB(43, 43, 48) : RGB(255, 255, 255);
                 COLORREF clrBorder = g_darkMode ? RGB(64, 64, 72) : RGB(222, 226, 232);
                 HBRUSH brCard = CreateSolidBrush(clrCard);
                 HPEN pnCard = CreatePen(PS_SOLID, 1, clrBorder);
-                HGDIOBJ oldPen = SelectObject(hdc, pnCard);
-                HGDIOBJ oldBrush = SelectObject(hdc, brCard);
-                RoundRect(hdc, content.left, content.top, content.right, content.bottom, 10, 10);
-                SelectObject(hdc, oldBrush);
-                SelectObject(hdc, oldPen);
+                HGDIOBJ oldPen = SelectObject(memDC, pnCard);
+                HGDIOBJ oldBrush = SelectObject(memDC, brCard);
+                RoundRect(memDC, content.left, content.top, content.right, content.bottom, 10, 10);
+                SelectObject(memDC, oldBrush);
+                SelectObject(memDC, oldPen);
                 DeleteObject(brCard);
                 DeleteObject(pnCard);
 
-                // 左侧色条强调
+                // 左侧色条强调 - 绘制到内存DC
                 HBRUSH brAccent = CreateSolidBrush(RGB(45, 140, 255));
                 RECT accent = { content.left, content.top, content.left + 3, content.bottom };
-                FillRect(hdc, &accent, brAccent);
+                FillRect(memDC, &accent, brAccent);
                 DeleteObject(brAccent);
 
-                // 标题
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, g_darkMode ? RGB(240, 240, 240) : RGB(28, 28, 30));
-                if (g_fontTitle) SelectObject(hdc, g_fontTitle);
+                // 标题 - 绘制到内存DC
+                SetBkMode(memDC, TRANSPARENT);
+                SetTextColor(memDC, g_darkMode ? RGB(240, 240, 240) : RGB(28, 28, 30));
+                if (g_fontTitle) SelectObject(memDC, g_fontTitle);
                 RECT titleRc = { content.left + 10, content.top + 8, content.right - 10, content.top + 36 };
-                // DrawTextW(hdc, L"提醒", -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                
+                // 标题文本 - 移除标题显示
+                // std::wstring titleText = L"📚 单词复习提醒";
+                // DrawTextW(memDC, titleText.c_str(), -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 正文 - 分别绘制单词和释义
+                // 正文 - 绘制到内存DC
                 int yOffset = content.top + 40;
                 
                 // 绘制动态内容 - 处理多个单词
                 if (!g_reminderText.empty())
                 {
                     // 使用小字体显示所有内容，因为现在可能有多个单词
-                    if (g_fontText) SelectObject(hdc, g_fontText);
-                    SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
+                    if (g_fontText) SelectObject(memDC, g_fontText);
+                    SetTextColor(memDC, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
                     RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
-                    DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                    
+                    // 简化绘制，移除分隔线绘制以减少闪烁
+                    DrawTextW(memDC, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
                 }
+
+                // 一次性将内存DC的内容复制到屏幕DC
+                BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memDC, 0, 0, SRCCOPY);
+                
+                // 清理GDI对象
+                SelectObject(memDC, oldBitmap);
+                DeleteObject(memBitmap);
+                DeleteDC(memDC);
 
                 EndPaint(hwnd, &ps);
                 return 0;
@@ -622,25 +656,33 @@ namespace WordReminder
                 }
                 return (LRESULT)g_btnBgBrush;
             }
-            case WM_KEYDOWN:
-            {
-                if (wParam == VK_ESCAPE)
-                {
-                    g_state->showReminderPopup = false;
-                    DestroyWindow(hwnd);
-                    return 0;
-                }
-                break;
-            }
-            case WM_TIMER:
-            {
-                if (wParam == 1)
-                {
-                    KillTimer(hwnd, 1);
-                    g_state->showReminderPopup = false;
-                    DestroyWindow(hwnd);
-                    return 0;
-                }
+                         case WM_KEYDOWN:
+             {
+                 if (wParam == VK_ESCAPE)
+                 {
+                     g_state->showReminderPopup = false;
+                     ShowWindow(hwnd, SW_HIDE);
+                     g_windowShouldBeVisible = false;
+                     return 0;
+                 }
+                 break;
+             }
+                         case WM_TIMER:
+             {
+                 if (wParam == 1)
+                 {
+                     KillTimer(hwnd, 1);
+                     g_state->showReminderPopup = false;
+                     ShowWindow(hwnd, SW_HIDE);
+                     g_windowShouldBeVisible = false;
+                     
+                     // 检查是否还有其他需要复习的单词，如果有则重新显示
+                     if (HasReminderToShow())
+                     {
+                         g_state->showReminderPopup = true;
+                     }
+                     return 0;
+                 }
                 if (wParam == 2)
                 {
                     if (g_animOpacity < 250)
@@ -658,15 +700,34 @@ namespace WordReminder
                 }
                 break;
             }
-            case WM_CLOSE:
-            {
-                g_state->showReminderPopup = false;
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            case WM_DESTROY:
-            {
-                if (hwnd == g_reminderHwnd) g_reminderHwnd = nullptr;
+                         case WM_CLOSE:
+             {
+                 g_state->showReminderPopup = false;
+                 ShowWindow(hwnd, SW_HIDE);
+                 g_windowShouldBeVisible = false;
+                 return 0;
+             }
+                         case WM_DESTROY:
+             {
+                 if (hwnd == g_reminderHwnd) 
+                 {
+                     g_reminderHwnd = nullptr;
+                     g_windowShouldBeVisible = false;
+                     g_currentDisplayedWords.clear();
+                     
+                     // 检查是否还有其他需要复习的单词
+                     if (HasReminderToShow())
+                     {
+                         // 如果有，重新设置显示标志
+                         g_state->showReminderPopup = true;
+                     }
+                     else
+                     {
+                         // 只有在没有需要复习的单词时才重置位置
+                         g_windowPosition.x = -1;
+                         g_windowPosition.y = -1;
+                     }
+                 }
                 if (g_fontTitle) { DeleteObject(g_fontTitle); g_fontTitle = nullptr; }
                 if (g_fontText) { DeleteObject(g_fontText); g_fontText = nullptr; }
         if (g_fontWord) { DeleteObject(g_fontWord); g_fontWord = nullptr; }
@@ -681,66 +742,81 @@ namespace WordReminder
     static void EnsureReminderWindow()
     {
         auto dueWords = GetDueWords();
+        
+        // 比较最新列表和当前显示的列表
+        bool wordsChanged = false;
+        if (dueWords.size() != g_currentDisplayedWords.size())
+        {
+            wordsChanged = true;
+        }
+        else
+        {
+            // 比较每个单词的内容
+            for (size_t i = 0; i < dueWords.size(); ++i)
+            {
+                if (i >= g_currentDisplayedWords.size() || 
+                    dueWords[i].word != g_currentDisplayedWords[i].word ||
+                    dueWords[i].meaning != g_currentDisplayedWords[i].meaning)
+                {
+                    wordsChanged = true;
+                    break;
+                }
+            }
+        }
+        
+        // 更新当前显示的单词列表
+        g_currentDisplayedWords = dueWords;
+        
         if (dueWords.empty()) 
         { 
-            // 如果没有需要复习的单词，关闭现有窗口
+            // 如果没有需要复习的单词，隐藏窗口而不是销毁
             if (g_reminderHwnd) 
             {
-                DestroyWindow(g_reminderHwnd);
-                g_reminderHwnd = nullptr;
+                ShowWindow(g_reminderHwnd, SW_HIDE);
+                g_windowShouldBeVisible = false;
             }
             g_state->showReminderPopup = false; 
             return; 
         }
 
-        // 如果窗口已经存在，只更新内容，不重新创建
-        if (g_reminderHwnd) 
+        // 构建新的文本内容
+        std::wstring fullText;
+        for (size_t i = 0; i < dueWords.size(); ++i)
         {
-            // 更新文本内容
-            std::wstring fullText;
-            for (size_t i = 0; i < dueWords.size(); ++i)
+            const auto& entry = dueWords[i];
+            std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
+            std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
+            
+            if (i > 0)
             {
-                const auto& entry = dueWords[i];
-                std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
-                std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
-                
-                if (i > 0)
-                {
-                    fullText += L"\n\n";
-                }
-                
-                fullText += wordText + L"\n" + meaningText;
+                fullText += L"\n\n";
             }
             
-            g_reminderText = fullText;
+            fullText += wordText + L"\n" + meaningText;
+        }
+        
+        // 如果窗口已经存在，检查内容是否需要更新
+        if (g_reminderHwnd) 
+        {
+            // 只有当内容真正改变时才更新，避免频繁重绘
+            if (g_reminderText != fullText)
+            {
+                g_reminderText = fullText;
+                // 只在内容真正改变时才重绘，并且使用更温和的方式
+                InvalidateRect(g_reminderHwnd, nullptr, FALSE);
+            }
             
-            // 强制重绘窗口以显示新内容
-            InvalidateRect(g_reminderHwnd, nullptr, TRUE);
-            UpdateWindow(g_reminderHwnd);
+            // 确保窗口可见
+            if (!g_windowShouldBeVisible)
+            {
+                ShowWindow(g_reminderHwnd, SW_SHOW);
+                g_windowShouldBeVisible = true;
+            }
             return;
         }
 
-        // 显示所有需要复习的单词
-        if (!dueWords.empty())
-        {
-            std::wstring fullText;
-            
-            for (size_t i = 0; i < dueWords.size(); ++i)
-            {
-                const auto& entry = dueWords[i];
-                std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
-                std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
-                
-                if (i > 0)
-                {
-                    fullText += L"\n\n";
-                }
-                
-                fullText += wordText + L"\n" + meaningText;
-            }
-            
-            g_reminderText = fullText;
-        }
+        // 设置文本内容
+        g_reminderText = fullText;
 
         WNDCLASSW wc = {};
         wc.lpfnWndProc = ReminderWndProc;
@@ -755,37 +831,54 @@ namespace WordReminder
         // 根据内容自适应窗口尺寸
         // Base size, scale by desktop DPI (use system DPI since window not yet created)
         float s = GetSystemDpiScale();
-        int baseWidth = (int)(450 * s);  // 增加基础宽度
-        int baseHeight = (int)(280 * s); // 增加基础高度
+        int baseWidth = (int)(500 * s);  // 增加基础宽度以容纳更多内容
+        int baseHeight = (int)(320 * s); // 增加基础高度以容纳多个单词
         SIZE contentSize = {0,0};
         {
             HDC hdc = GetDC(nullptr);
             HFONT old = nullptr;
             if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
-            RECT rcMeasure = {0,0,(LONG)(480 * s),1000};
+            RECT rcMeasure = {0,0,(LONG)(520 * s),2000}; // 增加测量区域高度
             DrawTextW(hdc, g_reminderText.c_str(), -1, &rcMeasure, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
             contentSize.cx = rcMeasure.right - rcMeasure.left;
             contentSize.cy = rcMeasure.bottom - rcMeasure.top;
             if (old) SelectObject(hdc, old);
             ReleaseDC(nullptr, hdc);
         }
-        int width = std::max<int>(baseWidth, static_cast<int>(contentSize.cx) + 16 + 16 + 24);
-        int height = std::max<int>(baseHeight, static_cast<int>(contentSize.cy) + 16 + 16 + 64 + 50);
+        int width = std::max<int>(baseWidth, static_cast<int>(contentSize.cx) + 32 + 24);
+        int height = std::max<int>(baseHeight, static_cast<int>(contentSize.cy) + 32 + 64 + 50);
 
         // Ensure width fits all buttons
-        int w1 = std::max<int>((int)(110 * s), IdealButtonWidth(L"标记已复习"));
-        int w2 = std::max<int>((int)(110 * s), IdealButtonWidth(L"稍后提醒"));
-        int w3 = std::max<int>((int)(110 * s), IdealButtonWidth(L"关闭"));
-        int buttonsTotal = w1 + w2 + w3 + 12 * 2 + 16 + 16; // gaps + side margins
+        int w1 = std::max<int>((int)(120 * s), IdealButtonWidth(L"标记已复习"));
+        int w2 = std::max<int>((int)(120 * s), IdealButtonWidth(L"稍后提醒"));
+        int w3 = std::max<int>((int)(120 * s), IdealButtonWidth(L"关闭"));
+        int buttonsTotal = w1 + w2 + w3 + 16 * 2 + 32; // gaps + side margins
         width = std::max<int>(width, buttonsTotal);
 
         RECT workArea;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-        int x = workArea.right - width - 20;
-        int y = workArea.top + 20;
+        
+        // 使用记住的位置，如果没有记住的位置则使用默认右上角位置
+        int x, y;
+        if (g_windowPosition.x >= 0 && g_windowPosition.y >= 0)
+        {
+            x = g_windowPosition.x;
+            y = g_windowPosition.y;
+            
+            // 确保窗口不会超出工作区域
+            if (x + width > workArea.right) x = workArea.right - width - 20;
+            if (y + height > workArea.bottom) y = workArea.bottom - height - 20;
+            if (x < workArea.left) x = workArea.left + 20;
+            if (y < workArea.top) y = workArea.top + 20;
+        }
+        else
+        {
+            x = workArea.right - width - 20;
+            y = workArea.top + 20;
+        }
 
         g_reminderHwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_COMPOSITED,
             wc.lpszClassName,
             L"提醒",
             WS_CAPTION,
@@ -796,11 +889,13 @@ namespace WordReminder
         {
             ShowWindow(g_reminderHwnd, SW_SHOWNORMAL);
             UpdateWindow(g_reminderHwnd);
+            g_windowShouldBeVisible = true;
         }
         else
         {
             // 回退：无法创建窗口则不再显示
             g_state->showReminderPopup = false;
+            g_windowShouldBeVisible = false;
         }
     }
 #endif
@@ -918,9 +1013,7 @@ namespace WordReminder
     {
         if (!g_state || !g_state->autoShowReminders) return false;
         
-        // 如果已经显示提醒窗口，就不再重复显示
-        if (g_state->showReminderPopup) return false;
-        
+        // 检查是否有需要复习的单词
         auto now = std::chrono::system_clock::now();
         for (const auto& entry : g_state->words)
         {
@@ -1258,10 +1351,48 @@ namespace WordReminder
             }
         }
 
-        // 检查是否需要显示提醒
-        if (HasReminderToShow())
+        // 检查是否需要显示提醒窗口 - 进一步减少检查频率
+        static auto lastCheckTime = std::chrono::steady_clock::now();
+        static bool lastHasReminder = false;
+        static std::vector<WordEntry> lastDueWords; // 保存上次检查的单词列表
+        auto now = std::chrono::steady_clock::now();
+        
+        // 每1秒检查一次，避免过于频繁的检查
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCheckTime).count() >= 1000)
         {
-            g_state->showReminderPopup = true;
+            auto currentDueWords = GetDueWords();
+            bool currentHasReminder = !currentDueWords.empty();
+            
+            // 检查单词列表是否真正改变
+            bool wordsChanged = false;
+            if (currentDueWords.size() != lastDueWords.size())
+            {
+                wordsChanged = true;
+            }
+            else
+            {
+                // 比较每个单词的内容
+                for (size_t i = 0; i < currentDueWords.size(); ++i)
+                {
+                    if (i >= lastDueWords.size() || 
+                        currentDueWords[i].word != lastDueWords[i].word ||
+                        currentDueWords[i].meaning != lastDueWords[i].meaning)
+                    {
+                        wordsChanged = true;
+                        break;
+                    }
+                }
+            }
+            
+            // 只有当状态真正改变时才更新
+            if (currentHasReminder != lastHasReminder || wordsChanged)
+            {
+                g_state->showReminderPopup = currentHasReminder;
+                lastHasReminder = currentHasReminder;
+                lastDueWords = currentDueWords;
+            }
+            
+            lastCheckTime = now;
         }
         
         // 系统级提醒通知 - Windows右上角原生弹窗
@@ -1271,13 +1402,15 @@ namespace WordReminder
             EnsureReminderWindow();
             
             // 如果窗口创建失败或者没有需要复习的单词，重置标志
-            if (!g_reminderHwnd)
+            if (!g_reminderHwnd && !HasReminderToShow())
             {
                 g_state->showReminderPopup = false;
+                lastHasReminder = false;
             }
 #else
             // 非Windows平台暂不支持系统级弹窗，回退到关闭标志
             g_state->showReminderPopup = false;
+            lastHasReminder = false;
 #endif
         }
         
