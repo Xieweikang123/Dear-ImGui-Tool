@@ -1832,15 +1832,15 @@ namespace VSInspector
                          IM_COL32(0, 255, 0, (int)(cornerAlpha * 255)), 2.0f);
         
         // 顶部状态栏
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
-        ImGui::BeginChild("TopStatusBar", ImVec2(0, 25), true);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+        ImGui::BeginChild("TopStatusBar", ImVec2(0, 65), true);
         
         // 左侧：系统状态
         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "SYSTEM:");
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "ONLINE");
+        ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "ONLINE");
         
         // 中间：时间显示
         ImGui::SameLine();
@@ -1849,12 +1849,12 @@ namespace VSInspector
         struct tm* timeinfo = localtime(&now);
         char timeStr[64];
         strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "TIME: %s", timeStr);
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "TIME: %s", timeStr);
         
         // 右侧：应用统计
         ImGui::SameLine();
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.7f);
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "VS: %d | Cursor: %d | Configs: %d", 
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "VS: %d | Cursor: %d | Configs: %d", 
                           (int)g_vsList.size(), (int)g_cursorList.size(), (int)g_savedConfigs.size());
         
         ImGui::EndChild();
