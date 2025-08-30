@@ -363,18 +363,14 @@ static void RunReplacement()
 
 static void DrawUI()
 {
-    // Use the feature manager to draw all enabled features
-    FeatureManager::GetInstance().DrawAllFeatures();
-    
-    // Also show the feature manager window
-    static bool showFeatureManager = false;
+    // 绘制主菜单栏
     if (ImGui::BeginMainMenuBar())
     {
         if (ImGui::BeginMenu("Tools"))
         {
             if (ImGui::MenuItem("Feature Manager"))
             {
-                showFeatureManager = true;
+                FeatureManager::GetInstance().ShowFeatureSelector();
             }
             ImGui::EndMenu();
         }
@@ -397,10 +393,11 @@ static void DrawUI()
         ImGui::EndMainMenuBar();
     }
     
-    if (showFeatureManager)
-    {
-        FeatureManager::GetInstance().DrawFeatureSelector();
-    }
+    // 先绘制其他功能窗口
+    FeatureManager::GetInstance().DrawAllFeatures();
+    
+    // 最后绘制Feature Manager窗口（如果可见的话），确保它显示在最前面
+    FeatureManager::GetInstance().DrawFeatureSelector();
 }
 
 static void DrawVSUI()

@@ -35,6 +35,17 @@ public:
     
     // Draw feature selection UI
     void DrawFeatureSelector();
+    
+    // Window visibility control
+    void ShowFeatureSelector() { 
+        if (showFeatureSelector) {
+            // 如果窗口已经显示，标记为需要重新置顶
+            needBringToFront = true;
+        }
+        showFeatureSelector = true; 
+    }
+    void HideFeatureSelector() { showFeatureSelector = false; }
+    bool IsFeatureSelectorVisible() const { return showFeatureSelector; }
 
 private:
     FeatureManager() = default;
@@ -48,4 +59,5 @@ private:
     
     std::vector<FeatureInfo> features;
     bool showFeatureSelector = false;
+    bool needBringToFront = false;
 };
