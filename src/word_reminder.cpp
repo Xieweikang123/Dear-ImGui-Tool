@@ -33,7 +33,7 @@ namespace WordReminder
         char newWord[256] = "";
         char newMeaning[512] = "";
         char newPronunciation[256] = "";
-        int reminderSeconds = 1800; // 默认30分钟
+        int reminderSeconds = 5; // 默认5秒（用于测试）
         int reminderType = 0; // 0: 自定义, 1: 快速预设
         bool showReminderPopup = false;
         int selectedWordIndex = -1;
@@ -45,7 +45,7 @@ namespace WordReminder
         // 设置
         bool autoShowReminders = true;
         bool playSoundOnReminder = false;
-        int defaultReminderSeconds = 1800; // 默认30分钟
+        int defaultReminderSeconds = 5; // 默认5秒（用于测试）
         
         // 统计
         int totalWords = 0;
@@ -472,6 +472,13 @@ namespace WordReminder
                     MarkAllDueReviewed();
                     g_state->showReminderPopup = false;
                     DestroyWindow(hwnd);
+                    
+                    // 检查是否还有其他需要复习的单词
+                    auto remainingDueWords = GetDueWords();
+                    if (!remainingDueWords.empty())
+                    {
+                        g_state->showReminderPopup = true;
+                    }
                     return 0;
                 }
                 if (id == BTN_SNOOZE)
@@ -479,6 +486,13 @@ namespace WordReminder
                     SnoozeAllDueFiveMinutes();
                     g_state->showReminderPopup = false;
                     DestroyWindow(hwnd);
+                    
+                    // 检查是否还有其他需要复习的单词
+                    auto remainingDueWords = GetDueWords();
+                    if (!remainingDueWords.empty())
+                    {
+                        g_state->showReminderPopup = true;
+                    }
                     return 0;
                 }
                 if (id == BTN_CLOSE)
@@ -531,36 +545,14 @@ namespace WordReminder
                 // 正文 - 分别绘制单词和释义
                 int yOffset = content.top + 40;
                 
-                // 绘制动态内容 - 分别处理单词和释义
+                // 绘制动态内容 - 处理多个单词
                 if (!g_reminderText.empty())
                 {
-                    // 查找第一个换行符来分离单词和释义
-                    size_t firstNewline = g_reminderText.find(L'\n');
-                    if (firstNewline != std::wstring::npos)
-                    {
-                        std::wstring wordText = g_reminderText.substr(0, firstNewline);
-                        std::wstring meaningText = g_reminderText.substr(firstNewline + 1);
-                        
-                        // 绘制单词（使用大字体，更醒目）
-                        if (g_fontWord) SelectObject(hdc, g_fontWord);
-                        SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
-                        RECT wordRc = { content.left + 10, yOffset, content.right - 10, yOffset + 50 };
-                        DrawTextW(hdc, wordText.c_str(), -1, &wordRc, DT_LEFT | DT_TOP | DT_SINGLELINE);
-                        
-                        // 绘制释义（使用小字体）
-                        if (g_fontText) SelectObject(hdc, g_fontText);
-                        SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                        RECT meaningRc = { content.left + 10, yOffset + 50, content.right - 10, content.bottom - 10 };
-                        DrawTextW(hdc, meaningText.c_str(), -1, &meaningRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
-                    }
-                    else
-                    {
-                        // 如果没有换行符，全部用大字体显示
-                        if (g_fontWord) SelectObject(hdc, g_fontWord);
-                        SetTextColor(hdc, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
-                        RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
-                        DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
-                    }
+                    // 使用小字体显示所有内容，因为现在可能有多个单词
+                    if (g_fontText) SelectObject(hdc, g_fontText);
+                    SetTextColor(hdc, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
+                    RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
+                    DrawTextW(hdc, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
                 }
 
                 EndPaint(hwnd, &ps);
@@ -688,25 +680,66 @@ namespace WordReminder
 
     static void EnsureReminderWindow()
     {
-        if (g_reminderHwnd) return;
-
         auto dueWords = GetDueWords();
-        if (dueWords.empty()) { g_state->showReminderPopup = false; return; }
-
-        // 只显示第一个需要复习的单词，让单词更醒目
-        if (!dueWords.empty())
-        {
-            const auto& entry = dueWords[0];
-            std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
-            std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
-            
-            // 如果有多个单词，在释义后面添加提示
-            if (dueWords.size() > 1)
+        if (dueWords.empty()) 
+        { 
+            // 如果没有需要复习的单词，关闭现有窗口
+            if (g_reminderHwnd) 
             {
-                meaningText += L"\n\n    还有 " + std::to_wstring(dueWords.size() - 1) + L" 个单词需要复习";
+                DestroyWindow(g_reminderHwnd);
+                g_reminderHwnd = nullptr;
+            }
+            g_state->showReminderPopup = false; 
+            return; 
+        }
+
+        // 如果窗口已经存在，只更新内容，不重新创建
+        if (g_reminderHwnd) 
+        {
+            // 更新文本内容
+            std::wstring fullText;
+            for (size_t i = 0; i < dueWords.size(); ++i)
+            {
+                const auto& entry = dueWords[i];
+                std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
+                std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
+                
+                if (i > 0)
+                {
+                    fullText += L"\n\n";
+                }
+                
+                fullText += wordText + L"\n" + meaningText;
             }
             
-            g_reminderText = wordText + L"\n" + meaningText;
+            g_reminderText = fullText;
+            
+            // 强制重绘窗口以显示新内容
+            InvalidateRect(g_reminderHwnd, nullptr, TRUE);
+            UpdateWindow(g_reminderHwnd);
+            return;
+        }
+
+        // 显示所有需要复习的单词
+        if (!dueWords.empty())
+        {
+            std::wstring fullText;
+            
+            for (size_t i = 0; i < dueWords.size(); ++i)
+            {
+                const auto& entry = dueWords[i];
+                std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
+                std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
+                
+                if (i > 0)
+                {
+                    fullText += L"\n\n";
+                }
+                
+                fullText += wordText + L"\n" + meaningText;
+            }
+            
+            g_reminderText = fullText;
         }
 
         WNDCLASSW wc = {};
@@ -722,8 +755,8 @@ namespace WordReminder
         // 根据内容自适应窗口尺寸
         // Base size, scale by desktop DPI (use system DPI since window not yet created)
         float s = GetSystemDpiScale();
-        int baseWidth = (int)(380 * s);
-        int baseHeight = (int)(220 * s);
+        int baseWidth = (int)(450 * s);  // 增加基础宽度
+        int baseHeight = (int)(280 * s); // 增加基础高度
         SIZE contentSize = {0,0};
         {
             HDC hdc = GetDC(nullptr);
@@ -1236,6 +1269,12 @@ namespace WordReminder
         {
 #ifdef _WIN32
             EnsureReminderWindow();
+            
+            // 如果窗口创建失败或者没有需要复习的单词，重置标志
+            if (!g_reminderHwnd)
+            {
+                g_state->showReminderPopup = false;
+            }
 #else
             // 非Windows平台暂不支持系统级弹窗，回退到关闭标志
             g_state->showReminderPopup = false;
