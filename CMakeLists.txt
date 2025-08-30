@@ -6,6 +6,24 @@ project(DearImGuiExample)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 静态链接配置 - 避免DLL依赖问题
+if(MSVC)
+    # 静态链接C++运行时库
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    
+    # 静态链接所有库
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /STATIC")
+    
+    # 禁用动态链接库
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".lib")
+    
+    # 强制使用静态版本的库
+    set(CMAKE_LINK_SEARCH_START_STATIC ON)
+    set(CMAKE_LINK_SEARCH_END_STATIC ON)
+    
+    message(STATUS "Static linking enabled for MSVC")
+endif()
+
 # Ensure Windows APIs use wide-character variants; critical for IME/Unicode input
 if(WIN32)
     add_compile_definitions(UNICODE _UNICODE)
@@ -72,8 +90,27 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 if(WIN32 AND USE_D3D11)
-    # Link DirectX 11 libraries
-    target_link_libraries(${PROJECT_NAME} d3d11 dxgi d3dcompiler ole32 oleaut32)
+    # Link DirectX 11 libraries (静态链接)
+    target_link_libraries(${PROJECT_NAME} 
+        d3d11.lib 
+        dxgi.lib 
+        d3dcompiler.lib 
+        ole32.lib 
+        oleaut32.lib
+        # 添加更多Windows系统库以确保静态链接
+        kernel32.lib
+        user32.lib
+        gdi32.lib
+        winspool.lib
+        comdlg32.lib
+        advapi32.lib
+        shell32.lib
+        ole32.lib
+        oleaut32.lib
+        uuid.lib
+        odbc32.lib
+        odbccp32.lib
+    )
 else()
     # Non-D3D11 path: find and link GLFW + OpenGL
     find_package(PkgConfig QUIET)
@@ -140,7 +177,22 @@ else()
     endif()
 
     if(WIN32)
-        target_link_libraries(${PROJECT_NAME} opengl32 gdi32 ole32 oleaut32)
+        target_link_libraries(${PROJECT_NAME} 
+            opengl32.lib 
+            gdi32.lib 
+            ole32.lib 
+            oleaut32.lib
+            # 添加更多Windows系统库以确保静态链接
+            kernel32.lib
+            user32.lib
+            winspool.lib
+            comdlg32.lib
+            advapi32.lib
+            shell32.lib
+            uuid.lib
+            odbc32.lib
+            odbccp32.lib
+        )
     elseif(APPLE)
         find_library(OPENGL_LIBRARY OpenGL)
         target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARY})
@@ -154,6 +206,20 @@ endif()
 if(MSVC)
     # Ensure MSVC treats sources as UTF-8 to avoid codepage mis-parsing
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /utf-8)
+    
+    # 添加静态链接相关的编译选项
+    target_compile_options(${PROJECT_NAME} PRIVATE 
+        /MT$<$<CONFIG:Debug>:d>  # 使用静态运行时库
+        /O2                      # 优化
+        /GL                      # 整个程序优化
+    )
+    
+    # 添加链接器选项
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        LINK_FLAGS "/LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO"
+    )
+    
+    message(STATUS "Static linking compiler options applied")
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
 endif()
