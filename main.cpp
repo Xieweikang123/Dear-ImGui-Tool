@@ -784,6 +784,37 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
+    // 单实例控制 - 使用命名互斥体
+    HANDLE singleInstanceMutex = CreateMutexW(nullptr, FALSE, L"DearImGuiTool_SingleInstance");
+    if (singleInstanceMutex == nullptr || GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        // 如果互斥体已存在，说明程序已经在运行
+        if (singleInstanceMutex)
+        {
+            CloseHandle(singleInstanceMutex);
+        }
+        
+        // 显示提示信息
+        MessageBoxW(nullptr, L"程序已经在运行中！\n\n只能启动一个实例。", L"提示", MB_OK | MB_ICONINFORMATION);
+        
+        // 尝试激活已运行的窗口
+        HWND existingWindow = FindWindowW(nullptr, L"Dear ImGui Minimal Example (D3D11)");
+        if (existingWindow)
+        {
+            // 将窗口带到前台
+            SetForegroundWindow(existingWindow);
+            ShowWindow(existingWindow, SW_RESTORE);
+            
+            // 如果窗口最小化，恢复它
+            if (IsIconic(existingWindow))
+            {
+                ShowWindow(existingWindow, SW_RESTORE);
+            }
+        }
+        
+        return 1; // 退出程序
+    }
+
     // Create Win32 window
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
     RegisterClassEx(&wc);
@@ -1086,6 +1117,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     DestroyWindow(hwnd);
     UnregisterClass(wc.lpszClassName, wc.hInstance);
 
+    // 清理单实例互斥体
+    if (singleInstanceMutex)
+    {
+        CloseHandle(singleInstanceMutex);
+    }
+
     return 0;
 }
 
@@ -1105,11 +1142,44 @@ static void glfw_error_callback(int error, const char* description)
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
 
+// 单实例控制 - 使用命名互斥体
+static HANDLE g_singleInstanceMutex = nullptr;
+
 int main(int, char**)
 {
+    // 创建命名互斥体，确保只有一个实例运行
+    g_singleInstanceMutex = CreateMutexW(nullptr, FALSE, L"DearImGuiTool_SingleInstance");
+    if (g_singleInstanceMutex == nullptr || GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        // 如果互斥体已存在，说明程序已经在运行
+        if (g_singleInstanceMutex)
+        {
+            CloseHandle(g_singleInstanceMutex);
+        }
+        
+        // 显示提示信息
+        MessageBoxW(nullptr, L"程序已经在运行中！\n\n只能启动一个实例。", L"提示", MB_OK | MB_ICONINFORMATION);
+        
+        // 尝试激活已运行的窗口
+        HWND existingWindow = FindWindowW(nullptr, L"Dear ImGui Minimal Example");
+        if (existingWindow)
+        {
+            // 将窗口带到前台
+            SetForegroundWindow(existingWindow);
+            ShowWindow(existingWindow, SW_RESTORE);
+            
+            // 如果窗口最小化，恢复它
+            if (IsIconic(existingWindow))
+            {
+                ShowWindow(existingWindow, SW_RESTORE);
+            }
+        }
+        
+        return 1; // 退出程序
+    }
 
     //log
-    AppendLog("main");
+    AppendLog("main - 单实例检查通过");
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -1411,6 +1481,14 @@ int main(int, char**)
 
     glfwDestroyWindow(window);
     glfwTerminate();
+    
+    // 清理单实例互斥体
+    if (g_singleInstanceMutex)
+    {
+        CloseHandle(g_singleInstanceMutex);
+        g_singleInstanceMutex = nullptr;
+    }
+    
     return 0;
 }
 #endif
