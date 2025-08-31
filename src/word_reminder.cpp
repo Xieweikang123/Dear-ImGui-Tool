@@ -1169,8 +1169,28 @@ namespace WordReminder
             }
             else
             {
+                // 创建排序索引：已掌握的单词排在最后面
+                std::vector<int> sortedIndices(g_state->words.size());
                 for (int i = 0; i < static_cast<int>(g_state->words.size()); i++)
                 {
+                    sortedIndices[i] = i;
+                }
+                
+                // 排序：已掌握的单词排在最后面
+                std::sort(sortedIndices.begin(), sortedIndices.end(), 
+                    [&](int a, int b) {
+                        bool aMastered = g_state->words[a].isMastered;
+                        bool bMastered = g_state->words[b].isMastered;
+                        if (aMastered != bMastered)
+                        {
+                            return !aMastered; // 未掌握的排在前面
+                        }
+                        return a < b; // 相同状态下保持原有顺序
+                    });
+                
+                for (int idx = 0; idx < static_cast<int>(sortedIndices.size()); idx++)
+                {
+                    int i = sortedIndices[idx];
                     const auto& entry = g_state->words[i];
                     
                     ImGui::PushID(i);
