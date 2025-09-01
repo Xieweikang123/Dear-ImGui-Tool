@@ -457,13 +457,15 @@ namespace WordReminder
     static bool g_darkMode = false;
     static BYTE g_animOpacity = 0; // 0-255，用于淡入
     static HBRUSH g_btnBgBrush = nullptr; // 为按钮提供与父窗口一致的背景
+    static HBRUSH g_cardBrush = nullptr; // 内容卡片背景，用于编辑框背景
     static POINT g_windowPosition = {-1, -1}; // 记住窗口位置，-1表示使用默认位置
+    static HWND g_textEdit = nullptr; // 可复制阅读的只读文本控件
     
     // 状态管理变量 - 用于跟踪当前显示的单词列表
     static std::vector<WordEntry> g_currentDisplayedWords; // 当前正在窗口上显示的单词列表
     static bool g_windowShouldBeVisible = false; // 窗口是否应该可见
 
-    enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003 };
+    enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003, BTN_COPY = 1004 };
 
 #ifdef _WIN32
     static float GetDpiScale(HWND hwnd)
@@ -619,17 +621,20 @@ namespace WordReminder
         RECT rc; GetClientRect(hwnd, &rc);
         int w1 = std::max<int>(110, IdealButtonWidth(L"标记已复习"));
         int w2 = std::max<int>(110, IdealButtonWidth(L"稍后提醒"));
-        int w3 = std::max<int>(110, IdealButtonWidth(L"关闭"));
-        int btnHeight = 50, gap = 10;
-        int totalWidth = w1 + w2 + w3 + gap * 2;
+        int w3 = std::max<int>(80, IdealButtonWidth(L"复制"));
+        int w4 = std::max<int>(80, IdealButtonWidth(L"关闭"));
+        int btnHeight = 50, gap = 8;
+        int totalWidth = w1 + w2 + w3 + w4 + gap * 3;
         int startX = rc.right - totalWidth - 14;
         int y = rc.bottom - btnHeight - 12;
         HWND btnReviewed = GetDlgItem(hwnd, BTN_REVIEWED);
         HWND btnSnooze = GetDlgItem(hwnd, BTN_SNOOZE);
+        HWND btnCopy = GetDlgItem(hwnd, BTN_COPY);
         HWND btnClose = GetDlgItem(hwnd, BTN_CLOSE);
         if (btnReviewed) MoveWindow(btnReviewed, startX, y, w1, btnHeight, TRUE);
         if (btnSnooze)   MoveWindow(btnSnooze,   startX + w1 + gap, y, w2, btnHeight, TRUE);
-        if (btnClose)    MoveWindow(btnClose,    startX + w1 + gap + w2 + gap, y, w3, btnHeight, TRUE);
+        if (btnCopy)     MoveWindow(btnCopy,     startX + w1 + gap + w2 + gap, y, w3, btnHeight, TRUE);
+        if (btnClose)    MoveWindow(btnClose,    startX + w1 + gap + w2 + gap + w3 + gap, y, w4, btnHeight, TRUE);
     }
 
     static LRESULT CALLBACK ReminderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -652,9 +657,10 @@ namespace WordReminder
                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
+                // 创建专门用于单词的字体（更大更粗）
                 if (!g_fontWord)
                 {
-                    g_fontWord = CreateFontW((int)(24 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                    g_fontWord = CreateFontW((int)(20 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
                 }
@@ -671,18 +677,31 @@ namespace WordReminder
                 HWND b2 = CreateWindowW(L"BUTTON", L"稍后提醒",
                               WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                               0, 0, 0, 0, hwnd, (HMENU)BTN_SNOOZE, GetModuleHandleW(nullptr), nullptr);
-                HWND b3 = CreateWindowW(L"BUTTON", L"关闭",
+                HWND b3 = CreateWindowW(L"BUTTON", L"复制",
+                              WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                              0, 0, 0, 0, hwnd, (HMENU)BTN_COPY, GetModuleHandleW(nullptr), nullptr);
+                HWND b4 = CreateWindowW(L"BUTTON", L"关闭",
                               WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                               0, 0, 0, 0, hwnd, (HMENU)BTN_CLOSE, GetModuleHandleW(nullptr), nullptr);
                 if (b1) SendMessageW(b1, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
                 if (b2) SendMessageW(b2, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
                 if (b3) SendMessageW(b3, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
+                if (b4) SendMessageW(b4, WM_SETFONT, (WPARAM)g_fontButton, TRUE);
                 LayoutButtons(hwnd);
                 SetTimer(hwnd, 1, 15000, nullptr); // 15秒自动关闭
 
                 // 应用系统主题及DWM效果
                 g_darkMode = IsSystemDarkMode();
                 ApplyDwmWindowAttributes(hwnd, g_darkMode);
+
+                // 不再使用编辑框，直接绘制文本
+
+                // 预备卡片背景画刷，供编辑框背景使用
+                if (g_cardBrush) { DeleteObject(g_cardBrush); g_cardBrush = nullptr; }
+                {
+                    COLORREF clrCard = g_darkMode ? RGB(43, 43, 48) : RGB(255, 255, 255);
+                    g_cardBrush = CreateSolidBrush(clrCard);
+                }
 
                 // 准备按钮背景刷（与父窗口背景一致，避免四角发白）
                 {
@@ -739,6 +758,52 @@ namespace WordReminder
                     if (HasReminderToShow())
                     {
                         g_state->showReminderPopup = true;
+                    }
+                    return 0;
+                }
+                if (id == BTN_COPY)
+                {
+                    // 只复制单词到剪贴板
+                    std::wstring wordsOnly;
+                    for (const auto& entry : g_currentDisplayedWords)
+                    {
+                        if (!wordsOnly.empty())
+                        {
+                            wordsOnly += L"\n";
+                        }
+                        wordsOnly += Utf8ToWide(entry.word);
+                    }
+                    
+                    if (!wordsOnly.empty())
+                    {
+                        // 转换为UTF-8格式
+                        std::string utf8Text;
+                        int len = WideCharToMultiByte(CP_UTF8, 0, wordsOnly.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        if (len > 0)
+                        {
+                            utf8Text.resize(len - 1);
+                            WideCharToMultiByte(CP_UTF8, 0, wordsOnly.c_str(), -1, &utf8Text[0], len, nullptr, nullptr);
+                        }
+                        
+                        // 打开剪贴板
+                        if (OpenClipboard(hwnd))
+                        {
+                            EmptyClipboard();
+                            
+                            // 分配全局内存
+                            HGLOBAL hClipboardData = GlobalAlloc(GMEM_DDESHARE, utf8Text.length() + 1);
+                            if (hClipboardData)
+                            {
+                                char* pchData = (char*)GlobalLock(hClipboardData);
+                                if (pchData)
+                                {
+                                    strcpy_s(pchData, utf8Text.length() + 1, utf8Text.c_str());
+                                    GlobalUnlock(hClipboardData);
+                                    SetClipboardData(CF_TEXT, hClipboardData);
+                                }
+                            }
+                            CloseClipboard();
+                        }
                     }
                     return 0;
                 }
@@ -799,19 +864,46 @@ namespace WordReminder
                 // std::wstring titleText = L"📚 单词复习提醒";
                 // DrawTextW(memDC, titleText.c_str(), -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 正文 - 绘制到内存DC
+                // 直接绘制文本内容，单词使用粗体字体
                 int yOffset = content.top + 40;
-                
-                // 绘制动态内容 - 处理多个单词
                 if (!g_reminderText.empty())
                 {
-                    // 使用小字体显示所有内容，因为现在可能有多个单词
-                    if (g_fontText) SelectObject(memDC, g_fontText);
-                    SetTextColor(memDC, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
-                    RECT textRc = { content.left + 10, yOffset, content.right - 10, content.bottom - 10 };
+                    // 解析文本，分别绘制单词（粗体）和释义（普通）
+                    std::wstring text = g_reminderText;
+                    size_t pos = 0;
+                    int currentY = yOffset;
                     
-                    // 简化绘制，移除分隔线绘制以减少闪烁
-                    DrawTextW(memDC, g_reminderText.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                    while (pos < text.length())
+                    {
+                        size_t lineEnd = text.find(L'\n', pos);
+                        if (lineEnd == std::wstring::npos) lineEnd = text.length();
+                        
+                        std::wstring line = text.substr(pos, lineEnd - pos);
+                        
+                        // 检查是否是单词行（包含📖图标）
+                        if (line.find(L"📖") != std::wstring::npos)
+                        {
+                            // 单词行：使用粗体字体
+                            if (g_fontWord) SelectObject(memDC, g_fontWord);
+                            SetTextColor(memDC, g_darkMode ? RGB(255, 255, 255) : RGB(0, 0, 0));
+                        }
+                        else
+                        {
+                            // 释义行：使用普通字体
+                            if (g_fontText) SelectObject(memDC, g_fontText);
+                            SetTextColor(memDC, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
+                        }
+                        
+                        RECT lineRc = { content.left + 10, currentY, content.right - 10, currentY + 50 };
+                        DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                        
+                        // 计算下一行位置
+                        SIZE textSize;
+                        GetTextExtentPoint32W(memDC, line.c_str(), (int)line.length(), &textSize);
+                        currentY += textSize.cy + 5;
+                        
+                        pos = lineEnd + 1;
+                    }
                 }
 
                 // 一次性将内存DC的内容复制到屏幕DC
@@ -831,16 +923,21 @@ namespace WordReminder
                 if (!dis) break;
                 bool pressed = (dis->itemState & ODS_SELECTED) != 0;
 
-                // 主要按钮（标记已复习）使用实心蓝色，其余为浅色填充+边框
-                bool isPrimary = (GetDlgCtrlID(dis->hwndItem) == BTN_REVIEWED);
+                // 主要按钮（标记已复习）使用实心蓝色，复制按钮使用绿色，其余为浅色填充+边框
+                int ctrlId = GetDlgCtrlID(dis->hwndItem);
+                bool isPrimary = (ctrlId == BTN_REVIEWED);
+                bool isCopy = (ctrlId == BTN_COPY);
                 COLORREF primary = RGB(45, 140, 255);
                 COLORREF primaryPressed = RGB(29, 112, 214);
+                COLORREF copyColor = RGB(34, 197, 94);
+                COLORREF copyPressed = RGB(22, 163, 74);
                 COLORREF fill = g_darkMode ? RGB(58, 58, 64) : RGB(245, 247, 250);
                 COLORREF border = g_darkMode ? RGB(80, 80, 88) : RGB(220, 224, 228);
                 if (isPrimary) fill = pressed ? primaryPressed : primary;
+                else if (isCopy) fill = pressed ? copyPressed : copyColor;
 
                 HBRUSH b = CreateSolidBrush(fill);
-                HPEN p = CreatePen(PS_SOLID, 1, isPrimary ? RGB(30, 118, 224) : border);
+                HPEN p = CreatePen(PS_SOLID, 1, (isPrimary || isCopy) ? RGB(30, 118, 224) : border);
                 HGDIOBJ oldB = SelectObject(dis->hDC, b);
                 HGDIOBJ oldP = SelectObject(dis->hDC, p);
                 RoundRect(dis->hDC, dis->rcItem.left, dis->rcItem.top, dis->rcItem.right, dis->rcItem.bottom, 8, 8);
@@ -849,7 +946,7 @@ namespace WordReminder
                 DeleteObject(b);
                 DeleteObject(p);
                 SetBkMode(dis->hDC, TRANSPARENT);
-                COLORREF txt = isPrimary ? RGB(255,255,255) : (g_darkMode ? RGB(230,230,235) : RGB(40,40,44));
+                COLORREF txt = (isPrimary || isCopy) ? RGB(255,255,255) : (g_darkMode ? RGB(230,230,235) : RGB(40,40,44));
                 SetTextColor(dis->hDC, txt);
                 if (g_fontButton) SelectObject(dis->hDC, g_fontButton);
                 wchar_t buf[128];
@@ -889,6 +986,7 @@ namespace WordReminder
                 }
                 return (LRESULT)g_btnBgBrush;
             }
+
                          case WM_KEYDOWN:
              {
                  if (wParam == VK_ESCAPE)
@@ -1012,20 +1110,22 @@ namespace WordReminder
             return; 
         }
 
-        // 构建新的文本内容
+        // 构建新的文本内容，使用特殊格式突出单词
         std::wstring fullText;
         for (size_t i = 0; i < dueWords.size(); ++i)
         {
             const auto& entry = dueWords[i];
-            std::wstring wordText = L"📖 " + Utf8ToWide(entry.word);
-            std::wstring meaningText = L"    " + Utf8ToWide(entry.meaning);
+            std::wstring word = Utf8ToWide(entry.word);
+            std::wstring meaning = Utf8ToWide(entry.meaning);
             
             if (i > 0)
             {
                 fullText += L"\n\n";
             }
             
-            fullText += wordText + L"\n" + meaningText;
+            // 使用特殊符号和格式突出单词
+            fullText += L"📖 " + word;
+            fullText += L"\n    " + meaning;
         }
         
         // 如果窗口已经存在，检查内容是否需要更新
@@ -1035,7 +1135,8 @@ namespace WordReminder
             if (g_reminderText != fullText)
             {
                 g_reminderText = fullText;
-                // 只在内容真正改变时才重绘，并且使用更温和的方式
+                // 文本已直接绘制，无需同步到编辑框
+                // 仍然请求重绘以更新背景与边框
                 InvalidateRect(g_reminderHwnd, nullptr, FALSE);
             }
             
@@ -1123,6 +1224,7 @@ namespace WordReminder
             ShowWindow(g_reminderHwnd, SW_SHOWNORMAL);
             UpdateWindow(g_reminderHwnd);
             g_windowShouldBeVisible = true;
+            // 文本已直接绘制，无需同步
         }
         else
         {
