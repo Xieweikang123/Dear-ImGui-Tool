@@ -1530,7 +1530,6 @@ namespace VSInspector
             auto& cinst = foundCursor[idx];
             auto it = pidToTitle.find(cinst.pid);
             if (it != pidToTitle.end()) cinst.windowTitle = it->second;
-            AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" title=") + (cinst.windowTitle.empty()?"<none>":cinst.windowTitle));
             
             // 直接分配openedFolders中的文件夹，按索引顺序
             if (idx < openedFolders.size())
@@ -1538,11 +1537,9 @@ namespace VSInspector
                 cinst.folderPath = openedFolders[idx];
                 fs::path folderPath = cinst.folderPath;
                 cinst.workspaceName = folderPath.filename().string();
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" directly assigned opened folder ") + cinst.folderPath + std::string(" (index ") + std::to_string(idx) + std::string(")"));
             }
             else
             {
-                AppendLog(std::string("[cursor] pid ") + std::to_string((unsigned long)cinst.pid) + std::string(" no opened folder available (index ") + std::to_string(idx) + std::string(" >= ") + std::to_string(openedFolders.size()) + std::string(")"));
             }
         }
 

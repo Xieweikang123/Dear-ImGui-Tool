@@ -1,5 +1,6 @@
 #include "word_reminder.h"
 #include "imgui.h"
+#include "replace_tool.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -24,6 +25,7 @@
 
 namespace WordReminder
 {
+    using ReplaceTool::AppendLog;
     // 内部状态管理
     struct FeatureState
     {
@@ -723,23 +725,35 @@ namespace WordReminder
                 int scrollCode = LOWORD(wParam);
                 int pos = HIWORD(wParam);
                 
+                // 添加滚动调试日志
+                AppendLog("[滚动调试] WM_VSCROLL: code=" + std::to_string(scrollCode) + 
+                         ", pos=" + std::to_string(pos) + 
+                         ", 当前scrollPos=" + std::to_string(g_scrollPos) + 
+                         ", scrollMax=" + std::to_string(g_scrollMax));
+                
                 switch (scrollCode)
                 {
                     case SB_LINEUP:
                         g_scrollPos = std::max(0, g_scrollPos - 20);
+                        AppendLog("[滚动调试] SB_LINEUP: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_LINEDOWN:
                         g_scrollPos = std::min(g_scrollMax, g_scrollPos + 20);
+                        AppendLog("[滚动调试] SB_LINEDOWN: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_PAGEUP:
                         g_scrollPos = std::max(0, g_scrollPos - 100);
+                        AppendLog("[滚动调试] SB_PAGEUP: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_PAGEDOWN:
                         g_scrollPos = std::min(g_scrollMax, g_scrollPos + 100);
+                        AppendLog("[滚动调试] SB_PAGEDOWN: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_THUMBTRACK:
                     case SB_THUMBPOSITION:
                         g_scrollPos = pos;
+                        AppendLog("[滚动调试] SB_THUMB: 类型=" + std::string(scrollCode == SB_THUMBTRACK ? "TRACK" : "POSITION") + 
+                                 ", pos=" + std::to_string(pos) + ", 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                 }
                 
@@ -750,7 +764,15 @@ namespace WordReminder
             case WM_MOUSEWHEEL:
             {
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                int oldScrollPos = g_scrollPos;
                 g_scrollPos = std::max(0, std::min(g_scrollMax, g_scrollPos - delta / 4));
+                
+                // 添加鼠标滚轮调试日志
+                AppendLog("[滚动调试] WM_MOUSEWHEEL: delta=" + std::to_string(delta) + 
+                         ", 旧scrollPos=" + std::to_string(oldScrollPos) + 
+                         ", 新scrollPos=" + std::to_string(g_scrollPos) + 
+                         ", scrollMax=" + std::to_string(g_scrollMax));
+                
                 SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
@@ -905,6 +927,10 @@ namespace WordReminder
 
                 // 直接绘制文本内容，单词使用粗体字体，支持滚动
                 int yOffset = content.top + 40 - g_scrollPos;
+                AppendLog("[滚动调试] 文本绘制: yOffset=" + std::to_string(yOffset) + 
+                         ", content.top=" + std::to_string(content.top) + 
+                         ", g_scrollPos=" + std::to_string(g_scrollPos) + 
+                         ", 文本长度=" + std::to_string(g_reminderText.length()));
                 if (!g_reminderText.empty())
                 {
                     // 解析文本，分别绘制单词（粗体）和释义（普通）
@@ -1196,17 +1222,40 @@ namespace WordReminder
                 g_scrollMax = std::max(0, totalHeight - contentAreaHeight);
                 g_scrollPos = std::min(g_scrollPos, g_scrollMax);
                 
-                // 只有当内容超出内容区域时才显示滚动条
-                if (g_scrollMax > 0)
+                // 添加详细的滚动范围计算调试日志
+                AppendLog("[滚动调试] 详细计算: measureRc宽度=" + std::to_string(measureRc.right - measureRc.left) + 
+                         ", content区域=" + std::to_string(content.right - content.left) + "x" + std::to_string(content.bottom - content.top) + 
+                         ", contentAreaHeight=" + std::to_string(contentAreaHeight) + 
+                         ", totalHeight=" + std::to_string(totalHeight) + 
+                         ", 文本内容='" + std::string(g_reminderText.begin(), g_reminderText.end()) + "'");
+                
+                // 添加滚动范围计算调试日志
+                AppendLog("[滚动调试] 滚动范围计算: totalHeight=" + std::to_string(totalHeight) + 
+                         ", contentAreaHeight=" + std::to_string(contentAreaHeight) + 
+                         ", scrollMax=" + std::to_string(g_scrollMax) + 
+                         ", scrollPos=" + std::to_string(g_scrollPos));
+                
+                // 测试：强制设置滚动范围，即使内容不超出
+                if (g_scrollMax > 0 || !g_reminderText.empty())
                 {
+                    // 如果计算出的滚动范围太小，强制设置一个测试范围
+                    if (g_scrollMax <= 0 && !g_reminderText.empty())
+                    {
+                        g_scrollMax = 200; // 强制设置200像素的滚动范围用于测试
+                        AppendLog("[滚动调试] 强制设置滚动范围: " + std::to_string(g_scrollMax) + " (测试用)");
+                    }
+                    
                     SetScrollRange(g_reminderHwnd, SB_VERT, 0, g_scrollMax, TRUE);
                     SetScrollPos(g_reminderHwnd, SB_VERT, g_scrollPos, TRUE);
                     ShowScrollBar(g_reminderHwnd, SB_VERT, TRUE);
+                    AppendLog("[滚动调试] 显示滚动条: 范围0-" + std::to_string(g_scrollMax) + 
+                             ", 位置=" + std::to_string(g_scrollPos));
                 }
                 else
                 {
                     ShowScrollBar(g_reminderHwnd, SB_VERT, FALSE);
                     g_scrollPos = 0;
+                    AppendLog("[滚动调试] 隐藏滚动条: 内容不超出区域");
                 }
                 
                 if (old) SelectObject(hdc, old);
@@ -1280,6 +1329,11 @@ namespace WordReminder
             WS_CAPTION | WS_VSCROLL,
             x, y, width, height,
             nullptr, nullptr, wc.hInstance, nullptr);
+        
+        // 添加窗口创建调试日志
+        AppendLog("[滚动调试] 窗口创建: 样式包含WS_VSCROLL, 尺寸=" + std::to_string(width) + "x" + std::to_string(height) + 
+                 ", 位置=" + std::to_string(x) + "," + std::to_string(y) + 
+                 ", 窗口句柄=" + (g_reminderHwnd ? "有效" : "无效"));
 
         if (g_reminderHwnd)
         {
