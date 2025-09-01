@@ -1,0 +1,53 @@
+---
+globs: *.cpp,*.h
+description: Windows UI development patterns and best practices
+---
+
+# Windows UI Development Patterns
+
+## Window Creation and Management
+- Always set control properties immediately after creation
+- For scrollable controls, call `SetScrollRange()` after `CreateWindowExW()`
+- Use proper initialization order: Create → Configure → Show → Update
+
+## Scrollbar Implementation
+- Include `WS_VSCROLL` or `WS_HSCROLL` in window styles for scrollable content
+- Always calculate and set scroll range after window creation
+- Handle both `WM_VSCROLL` and `WM_MOUSEWHEEL` events
+- Reset scroll position when content changes significantly
+
+## Event Handling Patterns
+```cpp
+case WM_VSCROLL:
+{
+    int scrollCode = LOWORD(wParam);
+    int pos = HIWORD(wParam);
+    
+    switch (scrollCode)
+    {
+        case SB_LINEUP: /* handle line up */ break;
+        case SB_LINEDOWN: /* handle line down */ break;
+        case SB_PAGEUP: /* handle page up */ break;
+        case SB_PAGEDOWN: /* handle page down */ break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            g_scrollPos = pos;
+            break;
+    }
+    
+    SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
+    InvalidateRect(hwnd, nullptr, TRUE);
+    return 0;
+}
+```
+
+## Text Rendering with Scrolling
+- Calculate text bounds using `DrawTextW()` with `DT_CALCRECT`
+- Apply scroll offset to drawing coordinates
+- Implement clipping to avoid drawing outside visible area
+- Update scroll range when content changes
+
+## Memory Management
+- Always release GDI objects (fonts, brushes, pens) after use
+- Use RAII patterns where possible
+- Clean up resources in `WM_DESTROY` handler

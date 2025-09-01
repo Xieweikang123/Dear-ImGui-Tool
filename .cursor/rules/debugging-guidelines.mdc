@@ -1,0 +1,37 @@
+---
+alwaysApply: true
+description: Debugging and logging guidelines for the Dear ImGui Tool project
+---
+
+# Debugging and Logging Guidelines
+
+## Logging System
+- Always use `AppendLog()` from `ReplaceTool` namespace for consistent logging
+- Include `#include "replace_tool.h"` and `using ReplaceTool::AppendLog;` in source files
+- Use descriptive log prefixes like `[滚动调试]`, `[window]`, `[vs]`, `[cursor]`, etc.
+
+## Debugging Approach
+- Add comprehensive logging before making assumptions about code behavior
+- Log key variables and state changes at critical points
+- Use structured log messages with context: `[component] action: details`
+- Include relevant values in log messages for easier debugging
+
+## Windows API Debugging
+- When working with Windows controls (scrollbars, windows, etc.), log:
+  - Control creation parameters
+  - State changes (position, range, visibility)
+  - Event handling (WM_VSCROLL, WM_MOUSEWHEEL, etc.)
+- Always verify initialization order - controls may be visible but not functional if not properly initialized
+
+## Common Debugging Patterns
+```cpp
+// Log state before and after operations
+AppendLog("[component] Before operation: state=" + std::to_string(state));
+// ... operation ...
+AppendLog("[component] After operation: newState=" + std::to_string(newState));
+
+// Log event details
+AppendLog("[component] Event received: type=" + std::to_string(type) + 
+         ", param1=" + std::to_string(param1) + 
+         ", param2=" + std::to_string(param2));
+```

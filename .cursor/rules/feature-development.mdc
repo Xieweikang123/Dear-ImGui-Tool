@@ -1,0 +1,48 @@
+---
+description: Guidelines for developing new features in the Dear ImGui Tool
+---
+
+# Feature Development Guidelines
+
+## Feature Architecture
+- Each feature should be self-contained in its own `.cpp` and `.h` files
+- Use the feature manager system for integration
+- Implement standard interface: `Initialize()`, `DrawUI()`, `Cleanup()`
+- Follow the pattern established in [src/word_reminder.cpp](mdc:src/word_reminder.cpp)
+
+## Feature Interface Pattern
+```cpp
+namespace FeatureName
+{
+    const char* GetFeatureName();
+    bool IsEnabled();
+    void SetEnabled(bool enabled);
+    void Initialize();
+    void DrawUI();
+    void Cleanup();
+}
+```
+
+## UI Development
+- Use Dear ImGui for main interface components
+- Consider Windows native controls for specialized functionality (like the word reminder popup)
+- Implement proper window management and state persistence
+- Add comprehensive logging for debugging
+
+## State Management
+- Use static variables or singleton patterns for feature state
+- Implement save/load functionality for persistent data
+- Handle application lifecycle events properly
+- Clean up resources on shutdown
+
+## Testing and Debugging
+- Add extensive logging during development
+- Test edge cases and error conditions
+- Verify proper cleanup and resource management
+- Use the shared logging system for consistency
+
+## Integration
+- Register features with the feature manager
+- Follow existing patterns for menu integration
+- Ensure features work well together
+- Maintain backward compatibility when possible

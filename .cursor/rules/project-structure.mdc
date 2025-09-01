@@ -1,0 +1,35 @@
+---
+alwaysApply: true
+description: Project structure and file organization guidelines
+---
+
+# Project Structure Guide
+
+## Main Components
+- [main.cpp](mdc:main.cpp) - Main application entry point and window management
+- [src/vs_inspector.cpp](mdc:src/vs_inspector.cpp) - Visual Studio process detection and management
+- [src/word_reminder.cpp](mdc:src/word_reminder.cpp) - Word learning reminder feature with Windows native popup
+- [src/replace_tool.cpp](mdc:src/replace_tool.cpp) - String replacement functionality
+- [src/feature_manager.cpp](mdc:src/feature_manager.cpp) - Feature management system
+
+## Build System
+- [build.bat](mdc:build.bat) - Build script using CMake
+- [CMakeLists.txt](mdc:CMakeLists.txt) - CMake configuration
+- [build/](mdc:build/) - Build output directory
+
+## Key Features
+1. **VS Inspector**: Detects running Visual Studio instances and manages solutions
+2. **Word Reminder**: Native Windows popup for vocabulary learning with scrolling support
+3. **Replace Tool**: File content and name replacement with backup functionality
+4. **Feature Manager**: Modular feature system for easy extension
+
+## Dependencies
+- Dear ImGui for main UI
+- Windows API for native controls and process management
+- CMake for build system
+- GLFW for window management
+
+## File Naming Conventions
+- Source files: `feature_name.cpp` and `feature_name.h`
+- Headers include corresponding `.h` files
+- Use descriptive names that indicate functionality

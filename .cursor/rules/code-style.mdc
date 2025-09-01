@@ -1,0 +1,52 @@
+---
+globs: *.cpp,*.h
+description: Code style and formatting guidelines
+---
+
+# Code Style Guidelines
+
+## Naming Conventions
+- Use `camelCase` for variables and functions: `g_scrollPos`, `EnsureReminderWindow()`
+- Use `PascalCase` for classes and structs: `FeatureState`, `WordEntry`
+- Use `UPPER_CASE` for constants and macros: `BTN_REVIEWED`, `WS_VSCROLL`
+- Prefix global variables with `g_`: `g_reminderHwnd`, `g_scrollMax`
+
+## Function Organization
+- Group related functions together
+- Use static functions for internal implementation details
+- Place public interface functions at the top of files
+- Use descriptive function names that indicate purpose
+
+## Error Handling
+- Always check return values from Windows API calls
+- Use proper error logging with context
+- Handle edge cases gracefully
+- Provide meaningful error messages
+
+## Comments and Documentation
+- Use `//` for single-line comments
+- Use `/* */` for multi-line comments
+- Document complex algorithms and Windows API usage
+- Include TODO comments for future improvements
+
+## Include Organization
+```cpp
+// System includes first
+#include <windows.h>
+#include <string>
+#include <vector>
+
+// Project includes
+#include "word_reminder.h"
+#include "replace_tool.h"
+#include "imgui.h"
+
+// Using declarations
+using ReplaceTool::AppendLog;
+```
+
+## Memory and Resource Management
+- Always pair `CreateObject()` with corresponding `DeleteObject()`
+- Use RAII patterns where possible
+- Clean up resources in destructors or cleanup functions
+- Check for null pointers before use
