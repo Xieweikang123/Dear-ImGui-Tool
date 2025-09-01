@@ -457,6 +457,8 @@ namespace WordReminder
     static bool g_darkMode = false;
     static BYTE g_animOpacity = 0; // 0-255，用于淡入
     static HBRUSH g_btnBgBrush = nullptr; // 为按钮提供与父窗口一致的背景
+    static int g_scrollPos = 0;
+    static int g_scrollMax = 0;
     static HBRUSH g_cardBrush = nullptr; // 内容卡片背景，用于编辑框背景
     static POINT g_windowPosition = {-1, -1}; // 记住窗口位置，-1表示使用默认位置
     static HWND g_textEdit = nullptr; // 可复制阅读的只读文本控件
@@ -716,6 +718,43 @@ namespace WordReminder
                 SetTimer(hwnd, 2, 15, nullptr); // 每15ms 提升透明度
                 return 0;
             }
+            case WM_VSCROLL:
+            {
+                int scrollCode = LOWORD(wParam);
+                int pos = HIWORD(wParam);
+                
+                switch (scrollCode)
+                {
+                    case SB_LINEUP:
+                        g_scrollPos = std::max(0, g_scrollPos - 20);
+                        break;
+                    case SB_LINEDOWN:
+                        g_scrollPos = std::min(g_scrollMax, g_scrollPos + 20);
+                        break;
+                    case SB_PAGEUP:
+                        g_scrollPos = std::max(0, g_scrollPos - 100);
+                        break;
+                    case SB_PAGEDOWN:
+                        g_scrollPos = std::min(g_scrollMax, g_scrollPos + 100);
+                        break;
+                    case SB_THUMBTRACK:
+                    case SB_THUMBPOSITION:
+                        g_scrollPos = pos;
+                        break;
+                }
+                
+                SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            case WM_MOUSEWHEEL:
+            {
+                int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                g_scrollPos = std::max(0, std::min(g_scrollMax, g_scrollPos - delta / 4));
+                SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
             case WM_SIZE:
             {
                 LayoutButtons(hwnd);
@@ -864,8 +903,8 @@ namespace WordReminder
                 // std::wstring titleText = L"📚 单词复习提醒";
                 // DrawTextW(memDC, titleText.c_str(), -1, &titleRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 直接绘制文本内容，单词使用粗体字体
-                int yOffset = content.top + 40;
+                // 直接绘制文本内容，单词使用粗体字体，支持滚动
+                int yOffset = content.top + 40 - g_scrollPos;
                 if (!g_reminderText.empty())
                 {
                     // 解析文本，分别绘制单词（粗体）和释义（普通）
@@ -894,13 +933,16 @@ namespace WordReminder
                             SetTextColor(memDC, g_darkMode ? RGB(220, 220, 225) : RGB(60, 60, 68));
                         }
                         
-                        RECT lineRc = { content.left + 10, currentY, content.right - 10, currentY + 50 };
+                        // 不限制宽度，让文本自然显示
+                        RECT lineRc = { content.left + 10, currentY, rc.right - 10, content.bottom - 10 };
+                        int textHeight = DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+                        
+                        // 重新绘制，使用计算出的高度
+                        lineRc.bottom = lineRc.top + textHeight;
                         DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
                         
-                        // 计算下一行位置
-                        SIZE textSize;
-                        GetTextExtentPoint32W(memDC, line.c_str(), (int)line.length(), &textSize);
-                        currentY += textSize.cy + 5;
+                        // 移动到下一行位置
+                        currentY += textHeight + 8;
                         
                         pos = lineEnd + 1;
                     }
@@ -1135,6 +1177,41 @@ namespace WordReminder
             if (g_reminderText != fullText)
             {
                 g_reminderText = fullText;
+                
+                // 计算滚动条范围 - 只针对内容区域，不包含按钮
+                HDC hdc = GetDC(g_reminderHwnd);
+                HFONT old = nullptr;
+                if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
+                
+                RECT rc;
+                GetClientRect(g_reminderHwnd, &rc);
+                RECT content = { rc.left + 14, rc.top + 14, rc.right - 14, rc.bottom - 58 };
+                
+                // 计算文本内容的总高度
+                RECT measureRc = { 0, 0, content.right - content.left - 20, 2000 };
+                int totalHeight = DrawTextW(hdc, g_reminderText.c_str(), -1, &measureRc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+                
+                // 内容区域的实际可用高度（减去上下边距）
+                int contentAreaHeight = content.bottom - content.top - 80; // 减去上下边距
+                g_scrollMax = std::max(0, totalHeight - contentAreaHeight);
+                g_scrollPos = std::min(g_scrollPos, g_scrollMax);
+                
+                // 只有当内容超出内容区域时才显示滚动条
+                if (g_scrollMax > 0)
+                {
+                    SetScrollRange(g_reminderHwnd, SB_VERT, 0, g_scrollMax, TRUE);
+                    SetScrollPos(g_reminderHwnd, SB_VERT, g_scrollPos, TRUE);
+                    ShowScrollBar(g_reminderHwnd, SB_VERT, TRUE);
+                }
+                else
+                {
+                    ShowScrollBar(g_reminderHwnd, SB_VERT, FALSE);
+                    g_scrollPos = 0;
+                }
+                
+                if (old) SelectObject(hdc, old);
+                ReleaseDC(g_reminderHwnd, hdc);
+                
                 // 文本已直接绘制，无需同步到编辑框
                 // 仍然请求重绘以更新背景与边框
                 InvalidateRect(g_reminderHwnd, nullptr, FALSE);
@@ -1162,25 +1239,10 @@ namespace WordReminder
         static ATOM atom = RegisterClassW(&wc);
         (void)atom;
 
-        // 根据内容自适应窗口尺寸
-        // Base size, scale by desktop DPI (use system DPI since window not yet created)
+        // 使用固定尺寸，添加滚动条支持
         float s = GetSystemDpiScale();
-        int baseWidth = (int)(500 * s);  // 增加基础宽度以容纳更多内容
-        int baseHeight = (int)(320 * s); // 增加基础高度以容纳多个单词
-        SIZE contentSize = {0,0};
-        {
-            HDC hdc = GetDC(nullptr);
-            HFONT old = nullptr;
-            if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
-            RECT rcMeasure = {0,0,(LONG)(520 * s),2000}; // 增加测量区域高度
-            DrawTextW(hdc, g_reminderText.c_str(), -1, &rcMeasure, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
-            contentSize.cx = rcMeasure.right - rcMeasure.left;
-            contentSize.cy = rcMeasure.bottom - rcMeasure.top;
-            if (old) SelectObject(hdc, old);
-            ReleaseDC(nullptr, hdc);
-        }
-        int width = std::max<int>(baseWidth, static_cast<int>(contentSize.cx) + 32 + 24);
-        int height = std::max<int>(baseHeight, static_cast<int>(contentSize.cy) + 32 + 64 + 50);
+        int width = (int)(500 * s);   // 固定合适的宽度
+        int height = (int)(250 * s);  // 固定合适的高度
 
         // Ensure width fits all buttons
         int w1 = std::max<int>((int)(120 * s), IdealButtonWidth(L"标记已复习"));
@@ -1215,7 +1277,7 @@ namespace WordReminder
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_COMPOSITED,
             wc.lpszClassName,
             L"提醒",
-            WS_CAPTION,
+            WS_CAPTION | WS_VSCROLL,
             x, y, width, height,
             nullptr, nullptr, wc.hInstance, nullptr);
 
