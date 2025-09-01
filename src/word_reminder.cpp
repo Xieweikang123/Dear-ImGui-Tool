@@ -98,6 +98,49 @@ namespace WordReminder
         }
     }
     
+    // 只读可选择文本（单行），外观尽量接近普通文本
+    static void DrawCopyableText(const char* id, const std::string& text)
+    {
+        std::vector<char> buf(text.begin(), text.end());
+        buf.push_back('\0');
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+        ImGui::InputText(id, buf.data(), (size_t)buf.size(), ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleVar();
+    }
+
+    // 只读可选择文本（多行自动换行），外观尽量接近普通文本
+    static void DrawCopyableMultiline(const char* id, const std::string& text)
+    {
+        std::vector<char> buf(text.begin(), text.end());
+        buf.push_back('\0');
+        // 计算与 TextWrapped 近似的高度
+        float wrapWidth = ImGui::GetContentRegionAvail().x;
+        if (wrapWidth <= 0.0f) wrapWidth = 400.0f;
+        ImVec2 measured = ImGui::CalcTextSize(text.c_str(), nullptr, true, wrapWidth);
+        float lineH = ImGui::GetTextLineHeightWithSpacing();
+        float minH = lineH * 1.4f;
+        float maxH = lineH * 6.0f;
+        float height = measured.y + ImGui::GetStyle().FramePadding.y * 2.0f;
+        height = std::max(minH, std::min(maxH, height));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+        ImGui::InputTextMultiline(id, buf.data(), (size_t)buf.size(), ImVec2(-1, height),
+                                  ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
+        ImGui::PopStyleColor();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleVar();
+    }
+
     // 对字段进行转义与反转义，避免分隔符与换行破坏一行一条记录的约定
     static std::string EscapeField(const std::string& input)
     {
@@ -1436,11 +1479,18 @@ namespace WordReminder
                     }
                     
                     ImGui::SameLine();
-                    ImGui::Text("%s", entry.word.c_str());
+                    {
+                        std::string id = std::string("##word_") + std::to_string(i);
+                        DrawCopyableText(id.c_str(), entry.word);
+                    }
                     
                     // 已移除音标显示
                     
-                    ImGui::TextWrapped("释义: %s", entry.meaning.c_str());
+                    ImGui::TextWrapped("释义:");
+                    {
+                        std::string idm = std::string("##meaning_") + std::to_string(i);
+                        DrawCopyableMultiline(idm.c_str(), entry.meaning);
+                    }
                     
                     if (entry.isMastered)
                     {
