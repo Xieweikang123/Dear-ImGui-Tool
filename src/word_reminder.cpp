@@ -15,8 +15,10 @@
 #include <windows.h>
 #include <shellscalingapi.h>
 #include <dwmapi.h>
+#include <commdlg.h>
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "Shcore.lib")
+#pragma comment(lib, "Comdlg32.lib")
 #endif
 #include <algorithm>
 
@@ -96,6 +98,99 @@ namespace WordReminder
         }
     }
     
+    // 对字段进行转义与反转义，避免分隔符与换行破坏一行一条记录的约定
+    static std::string EscapeField(const std::string& input)
+    {
+        std::string out;
+        out.reserve(input.size());
+        for (char ch : input)
+        {
+            switch (ch)
+            {
+                case '\\': out += "\\\\"; break; // 反斜杠
+                case '|':   out += "\\|";   break; // 竖线分隔符
+                case '\n': out += "\\n";   break; // 换行
+                case '\r': out += "\\r";   break; // 回车
+                default:    out += ch;        break;
+            }
+        }
+        return out;
+    }
+
+    static std::string UnescapeField(const std::string& input)
+    {
+        std::string out;
+        out.reserve(input.size());
+        bool esc = false;
+        for (size_t i = 0; i < input.size(); ++i)
+        {
+            char ch = input[i];
+            if (!esc)
+            {
+                if (ch == '\\')
+                {
+                    esc = true;
+                    continue;
+                }
+                out += ch;
+            }
+            else
+            {
+                switch (ch)
+                {
+                    case 'n': out += '\n'; break;
+                    case 'r': out += '\r'; break;
+                    case '|': out += '|';  break;
+                    case '\\': out += '\\'; break;
+                    default:
+                        // 未知转义，按字面保留
+                        out += ch;
+                        break;
+                }
+                esc = false;
+            }
+        }
+        // 如果末尾是孤立的反斜杠，则保留一个反斜杠
+        if (esc) out += '\\';
+        return out;
+    }
+
+    // 将一行按未被转义的 '|' 进行分割
+    static std::vector<std::string> SplitByUnescapedPipe(const std::string& line)
+    {
+        std::vector<std::string> parts;
+        std::string current;
+        bool esc = false;
+        for (char ch : line)
+        {
+            if (!esc)
+            {
+                if (ch == '\\')
+                {
+                    esc = true;
+                    current.push_back(ch); // 保留反斜杠，供反转义阶段处理
+                }
+                else if (ch == '|')
+                {
+                    parts.push_back(current);
+                    current.clear();
+                }
+                else
+                {
+                    current.push_back(ch);
+                }
+            }
+            else
+            {
+                // 转义后的字符无论是什么都属于当前字段
+                current.push_back(ch);
+                esc = false;
+            }
+        }
+        parts.push_back(current);
+        return parts;
+    }
+
     // 保存单词到文件 (UTF-8)
     void SaveWords()
     {
@@ -107,9 +202,9 @@ namespace WordReminder
             file.write(reinterpret_cast<const char*>(bom), 3);
             for (const auto& entry : g_state->words)
             {
-                file << entry.word << "|"
-                     << entry.meaning << "|"
-                     << entry.pronunciation << "|"
+                file << EscapeField(entry.word) << "|"
+                     << EscapeField(entry.meaning) << "|"
+                     << EscapeField(entry.pronunciation) << "|"
                      << std::chrono::system_clock::to_time_t(entry.remindTime) << "|"
                      << entry.isActive << "|"
                      << entry.isMastered << "|"
@@ -136,50 +231,53 @@ namespace WordReminder
                 file.clear();
                 file.seekg(0, std::ios::beg);
             }
+            std::string buffer;
             while (std::getline(file, line))
             {
-                std::istringstream iss(line);
-                std::string word, meaning, pronunciation;
-                time_t remindTime, lastReview;
-                bool isActive = true;
-                bool isMastered = false;  // 默认未掌握
-                int reviewCount = 0;
-                
-                std::getline(iss, word, '|');
-                std::getline(iss, meaning, '|');
-                std::getline(iss, pronunciation, '|');
-                iss >> remindTime;
-                iss.ignore(); // 跳过分隔符
-                iss >> isActive;
-                iss.ignore(); // 跳过分隔符
-                
-                // 尝试读取isMastered字段，如果失败则使用默认值false
-                if (iss >> isMastered)
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (!buffer.empty()) buffer += "\n"; // 为兼容旧数据，将换行保留到缓冲区
+                buffer += line;
+
+                // 按未被转义的分隔符分割
+                auto parts = SplitByUnescapedPipe(buffer);
+                // 旧数据至少包含：word | meaning | pronunciation | remindTime | isActive
+                if (parts.size() < 5)
                 {
-                    iss.ignore(); // 跳过分隔符
+                    // 字段不足，继续读取下一行（说明有未转义的换行打断了记录）
+                    continue;
                 }
-                else
-                {
-                    // 如果读取失败，说明是旧格式数据，重置流并继续
-                    iss.clear();
-                    isMastered = false;
-                }
-                
-                iss >> reviewCount;
-                iss.ignore(); // 跳过分隔符
-                iss >> lastReview;
-                
+
+                // 解析一个完整记录
                 WordEntry entry;
-                entry.word = word;
-                entry.meaning = meaning;
-                entry.pronunciation = pronunciation;
-                entry.remindTime = std::chrono::system_clock::from_time_t(remindTime);
-                entry.isActive = isActive;
-                entry.isMastered = isMastered;
-                entry.reviewCount = reviewCount;
-                entry.lastReview = std::chrono::system_clock::from_time_t(lastReview);
-                
+                entry.word = UnescapeField(parts[0]);
+                entry.meaning = UnescapeField(parts[1]);
+                entry.pronunciation = UnescapeField(parts[2]);
+
+                auto to_time = [](const std::string& s) -> time_t {
+                    try { return (time_t)std::stoll(s); } catch (...) { return (time_t)std::time(nullptr); }
+                };
+                auto to_bool = [](const std::string& s) -> bool {
+                    return (s == "1" || s == "true" || s == "True" || s == "TRUE");
+                };
+                auto to_int = [](const std::string& s) -> int {
+                    try { return (int)std::stol(s); } catch (...) { return 0; }
+                };
+
+                entry.remindTime = std::chrono::system_clock::from_time_t(to_time(parts[3]));
+                entry.isActive = to_bool(parts[4]);
+
+                bool hasMastered = parts.size() >= 6;
+                bool hasReview = parts.size() >= 7;
+                bool hasLastReview = parts.size() >= 8;
+
+                entry.isMastered = hasMastered ? to_bool(parts[5]) : false;
+                entry.reviewCount = hasReview ? to_int(parts[6]) : 0;
+                entry.lastReview = std::chrono::system_clock::from_time_t(
+                    hasLastReview ? to_time(parts[7]) : to_time(parts[3])
+                );
+
                 g_state->words.push_back(entry);
+                buffer.clear();
             }
             file.close();
         }
@@ -214,6 +312,36 @@ namespace WordReminder
                 g_state->dueWords++;
             }
             
+            if (entry.lastReview >= todayStart)
+            {
+                g_state->reviewedToday++;
+            }
+        }
+    }
+
+    // 重新计算统计信息
+    static void RecomputeStats()
+    {
+        if (!g_state) return;
+
+        g_state->totalWords = static_cast<int>(g_state->words.size());
+
+        auto now = std::chrono::system_clock::now();
+        g_state->dueWords = 0;
+        g_state->reviewedToday = 0;
+
+        auto today_t = std::chrono::system_clock::to_time_t(now);
+        std::tm local_tm = *std::localtime(&today_t);
+        std::tm start_tm = local_tm;
+        start_tm.tm_hour = 0; start_tm.tm_min = 0; start_tm.tm_sec = 0;
+        auto todayStart = std::chrono::system_clock::from_time_t(std::mktime(&start_tm));
+
+        for (const auto& entry : g_state->words)
+        {
+            if (entry.isActive && !entry.isMastered && entry.remindTime <= now)
+            {
+                g_state->dueWords++;
+            }
             if (entry.lastReview >= todayStart)
             {
                 g_state->reviewedToday++;
@@ -336,6 +464,68 @@ namespace WordReminder
         UINT dx = 96, dy = 96;
         GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dx, &dy);
         return (float)dx / 96.0f;
+    }
+#endif
+
+    // 文件对话框与导入导出辅助函数（Windows）
+#ifdef _WIN32
+    static bool ShowSaveFileDialog(std::wstring& outPath)
+    {
+        wchar_t fileBuffer[MAX_PATH] = L"";
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = nullptr;
+        static const wchar_t* filter = L"文本文件 (*.txt)\0*.txt\0所有文件 (*.*)\0*.*\0\0";
+        ofn.lpstrFilter = filter;
+        ofn.lpstrFile = fileBuffer;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+        ofn.lpstrDefExt = L"txt";
+        if (GetSaveFileNameW(&ofn))
+        {
+            outPath = fileBuffer;
+            return true;
+        }
+        return false;
+    }
+
+    static bool ShowOpenFileDialog(std::wstring& outPath)
+    {
+        wchar_t fileBuffer[MAX_PATH] = L"";
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = nullptr;
+        static const wchar_t* filter = L"文本文件 (*.txt)\0*.txt\0所有文件 (*.*)\0*.*\0\0";
+        ofn.lpstrFilter = filter;
+        ofn.lpstrFile = fileBuffer;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        if (GetOpenFileNameW(&ofn))
+        {
+            outPath = fileBuffer;
+            return true;
+        }
+        return false;
+    }
+
+    static void ExportWordsToPath(const std::wstring& savePath)
+    {
+        // 先保存到默认数据文件，然后复制
+        SaveWords();
+        CopyFileW(L"word_reminder_data.txt", savePath.c_str(), FALSE);
+    }
+
+    static bool ImportWordsFromPath(const std::wstring& openPath)
+    {
+        // 将选择的文件复制为默认数据文件，然后重新加载状态
+        if (!CopyFileW(openPath.c_str(), L"word_reminder_data.txt", FALSE))
+        {
+            return false;
+        }
+        g_state->words.clear();
+        LoadWords();
+        RecomputeStats();
+        return true;
     }
 #endif
 
@@ -1163,6 +1353,32 @@ namespace WordReminder
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("📚 单词列表", ImGuiTreeNodeFlags_DefaultOpen))
         {
+            // 导入/导出按钮栏
+#ifdef _WIN32
+            {
+                if (ImGui::Button("导出..."))
+                {
+                    std::wstring savePath;
+                    if (ShowSaveFileDialog(savePath))
+                    {
+                        ExportWordsToPath(savePath);
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("导入..."))
+                {
+                    std::wstring openPath;
+                    if (ShowOpenFileDialog(openPath))
+                    {
+                        if (ImportWordsFromPath(openPath))
+                        {
+                            // 成功导入后，数据和统计已更新
+                        }
+                    }
+                }
+            }
+#endif
+
             if (g_state->words.empty())
             {
                 ImGui::TextDisabled("还没有添加任何单词");
