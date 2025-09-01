@@ -963,9 +963,27 @@ namespace WordReminder
                         RECT lineRc = { content.left + 10, currentY, rc.right - 10, content.bottom - 10 };
                         int textHeight = DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
                         
-                        // 重新绘制，使用计算出的高度
-                        lineRc.bottom = lineRc.top + textHeight;
-                        DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                        // 检查这一行是否在可见区域内
+                        int lineBottom = currentY + textHeight;
+                        int visibleTop = content.top + 40;
+                        int visibleBottom = content.bottom - 10;
+                        
+                        // 只有当行在可见区域内时才绘制
+                        if (lineBottom > visibleTop && currentY < visibleBottom)
+                        {
+                            // 重新绘制，使用计算出的高度
+                            lineRc.bottom = lineRc.top + textHeight;
+                            DrawTextW(memDC, line.c_str(), -1, &lineRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                            AppendLog("[滚动调试] 绘制行: currentY=" + std::to_string(currentY) + 
+                                     ", textHeight=" + std::to_string(textHeight) + 
+                                     ", 可见区域=" + std::to_string(visibleTop) + "-" + std::to_string(visibleBottom));
+                        }
+                        else
+                        {
+                            AppendLog("[滚动调试] 跳过行: currentY=" + std::to_string(currentY) + 
+                                     ", textHeight=" + std::to_string(textHeight) + 
+                                     ", 超出可见区域");
+                        }
                         
                         // 移动到下一行位置
                         currentY += textHeight + 8;
@@ -1340,7 +1358,46 @@ namespace WordReminder
             ShowWindow(g_reminderHwnd, SW_SHOWNORMAL);
             UpdateWindow(g_reminderHwnd);
             g_windowShouldBeVisible = true;
-            // 文本已直接绘制，无需同步
+            
+            // 窗口创建后立即计算并设置滚动范围
+            HDC hdc = GetDC(g_reminderHwnd);
+            HFONT old = nullptr;
+            if (g_fontText) old = (HFONT)SelectObject(hdc, g_fontText);
+            
+            RECT rc;
+            GetClientRect(g_reminderHwnd, &rc);
+            RECT content = { rc.left + 14, rc.top + 14, rc.right - 14, rc.bottom - 58 };
+            
+            // 计算文本内容的总高度
+            RECT measureRc = { 0, 0, content.right - content.left - 20, 2000 };
+            int totalHeight = DrawTextW(hdc, g_reminderText.c_str(), -1, &measureRc, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_CALCRECT);
+            
+            // 内容区域的实际可用高度（减去上下边距）
+            int contentAreaHeight = content.bottom - content.top - 80;
+            g_scrollMax = std::max(0, totalHeight - contentAreaHeight);
+            g_scrollPos = 0; // 重置滚动位置
+            
+            AppendLog("[滚动调试] 窗口创建后设置滚动范围: totalHeight=" + std::to_string(totalHeight) + 
+                     ", contentAreaHeight=" + std::to_string(contentAreaHeight) + 
+                     ", scrollMax=" + std::to_string(g_scrollMax));
+            
+            // 强制设置滚动范围用于测试
+            if (g_scrollMax <= 0 && !g_reminderText.empty())
+            {
+                g_scrollMax = 200;
+                AppendLog("[滚动调试] 强制设置滚动范围: " + std::to_string(g_scrollMax) + " (测试用)");
+            }
+            
+            if (g_scrollMax > 0)
+            {
+                SetScrollRange(g_reminderHwnd, SB_VERT, 0, g_scrollMax, TRUE);
+                SetScrollPos(g_reminderHwnd, SB_VERT, g_scrollPos, TRUE);
+                ShowScrollBar(g_reminderHwnd, SB_VERT, TRUE);
+                AppendLog("[滚动调试] 窗口创建后显示滚动条: 范围0-" + std::to_string(g_scrollMax));
+            }
+            
+            if (old) SelectObject(hdc, old);
+            ReleaseDC(g_reminderHwnd, hdc);
         }
         else
         {

@@ -178,8 +178,7 @@ namespace VSInspector
                     CloseHandle(hProc);
                 }
                 outRunning = true;
-                AppendLog(std::string("[") + logPrefix + "] found " + exeLower + " pid=" + std::to_string((unsigned long)processId) + 
-                         (outPath.empty() ? " path=<unknown>" : " path=" + outPath));
+                // 进程检测日志已删除
                 return true;
             }
         }
@@ -1298,7 +1297,7 @@ namespace VSInspector
                             cinst.exePath.assign(buf, sz);
                         CloseHandle(hProc);
                     }
-                    AppendLog(std::string("[cursor] found cursor.exe pid=") + std::to_string((unsigned long)cinst.pid) + (cinst.exePath.empty()?" path=<unknown>":std::string(" path=") + cinst.exePath));
+                    // Cursor进程检测日志已删除
                     foundCursor.push_back(cinst);
                 }
                 else if (DetectProcessAndGetPath(exeLower, {"feishu.exe", "lark.exe"}, pe.th32ProcessID, foundFeishuPath, foundFeishuRunning, "feishu"))
@@ -1318,8 +1317,7 @@ namespace VSInspector
                         CloseHandle(hProc);
                     }
                     foundWechatRunning = true;
-                    AppendLog(std::string("[wechat] found main process ") + exeLower + " pid=" + std::to_string((unsigned long)pe.th32ProcessID) +
-                             (foundWechatPath.empty() ? " path=<unknown>" : " path=" + foundWechatPath));
+                    // 微信进程检测日志已删除
                 }
                 else if (exeLower == "wechatappex.exe")
                 {
@@ -1327,7 +1325,7 @@ namespace VSInspector
                     if (!foundWechatRunning)
                     {
                         foundWechatRunning = true;
-                        AppendLog(std::string("[wechat] found plugin process wechatappex.exe pid=") + std::to_string((unsigned long)pe.th32ProcessID));
+                        // 微信插件进程检测日志已删除
                     }
                 }
             } while (Process32Next(hSnap, &pe));
@@ -1366,24 +1364,24 @@ namespace VSInspector
         // 首先获取所有openedWindows中的文件夹
         std::vector<std::string> openedFolders;
         std::string appdata = GetEnvU8("APPDATA");
-        AppendLog(std::string("[cursor] APPDATA=") + appdata);
+        // Cursor APPDATA日志已删除
         if (!appdata.empty())
         {
             fs::path p = fs::path(appdata) / "Cursor" / "User" / "globalStorage" / "storage.json";
-            AppendLog(std::string("[cursor] checking storage.json at: ") + p.string());
+            // Cursor storage.json检查日志已删除
             std::error_code ec; 
             if (fs::exists(p, ec))
             {
-                AppendLog("[cursor] storage.json exists, reading content...");
+                // Cursor storage.json读取日志已删除
                 std::ifstream ifs(p.string(), std::ios::binary);
                 if (ifs)
                 {
                     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-                    AppendLog(std::string("[cursor] storage.json content size: ") + std::to_string(content.size()));
+                    // Cursor storage.json内容大小日志已删除
                     size_t openedWindowsPos = content.find("\"openedWindows\"");
                     if (openedWindowsPos != std::string::npos)
                     {
-                        AppendLog(std::string("[cursor] found openedWindows at position: ") + std::to_string(openedWindowsPos));
+                        // Cursor openedWindows位置日志已删除
                         size_t pos = openedWindowsPos;
                         int folderCount = 0;
                         while (true)
@@ -1391,12 +1389,12 @@ namespace VSInspector
                             size_t folderPos = content.find("\"folder\"", pos);
                             if (folderPos == std::string::npos) 
                             {
-                                AppendLog(std::string("[cursor] no more folder entries found, total found: ") + std::to_string(folderCount));
+                                // Cursor文件夹条目统计日志已删除
                                 break;
                             }
                             
                             folderCount++;
-                            AppendLog(std::string("[cursor] found folder entry #") + std::to_string(folderCount) + std::string(" at position: ") + std::to_string(folderPos));
+                            // Cursor文件夹条目位置日志已删除
                             
                             // 改进的JSON解析逻辑
                             // 查找 "folder": 后面的值
@@ -1426,47 +1424,46 @@ namespace VSInspector
                             if (valueEnd >= content.size()) break;
                             
                             std::string folderUri = content.substr(valueStart + 1, valueEnd - valueStart - 1);
-                            AppendLog(std::string("[cursor] folder URI: ") + folderUri);
+                            // Cursor文件夹URI日志已删除
                             
                             std::string winPath;
                             if (DecodeFileUriToWindowsPath(folderUri, winPath))
                             {
                                 openedFolders.push_back(winPath);
-                                AppendLog(std::string("[cursor] decoded opened folder: ") + winPath);
+                                // Cursor解码文件夹路径日志已删除
                             }
                             else
                             {
-                                AppendLog(std::string("[cursor] failed to decode folder URI: ") + folderUri);
+                                // Cursor URI解码失败日志已删除
                             }
                             pos = valueEnd + 1;
                         }
                     }
                     else
                     {
-                        AppendLog("[cursor] openedWindows not found in storage.json");
+                        // Cursor openedWindows未找到日志已删除
                     }
                 }
                 else
                 {
-                    AppendLog("[cursor] failed to open storage.json for reading");
+                    // Cursor storage.json读取失败日志已删除
                 }
             }
             else
             {
-                AppendLog(std::string("[cursor] storage.json does not exist, error code: ") + std::to_string(ec.value()));
+                // Cursor storage.json不存在日志已删除
             }
         }
         else
         {
-            AppendLog("[cursor] APPDATA environment variable is empty");
+            // Cursor APPDATA环境变量为空日志已删除
         }
-        AppendLog(std::string("[cursor] total openedFolders found: ") + std::to_string(openedFolders.size()));
-        AppendLog(std::string("[cursor] total cursor processes found: ") + std::to_string(foundCursor.size()));
+        // Cursor统计信息日志已删除
 
         // 如果没有从 openedWindows 解析到任何文件夹，则尝试从 lastActiveWindow 读取一个文件夹作为回退
         if (openedFolders.empty())
         {
-            AppendLog("[cursor] openedFolders empty, trying lastActiveWindow as fallback...");
+            // Cursor回退机制日志已删除
             std::string appdata2 = GetEnvU8("APPDATA");
             if (!appdata2.empty())
             {
@@ -1479,7 +1476,7 @@ namespace VSInspector
                     {
                         std::string content2((std::istreambuf_iterator<char>(ifs2)), std::istreambuf_iterator<char>());
                         size_t lastActiveWindowPos = content2.find("\"lastActiveWindow\"");
-                        AppendLog(std::string("[cursor] lastActiveWindowPos: ") + std::to_string(lastActiveWindowPos));
+                        // Cursor lastActiveWindow位置日志已删除
                         if (lastActiveWindowPos != std::string::npos)
                         {
                             size_t folderKeyPos = content2.find("\"folder\"", lastActiveWindowPos);
@@ -1504,11 +1501,11 @@ namespace VSInspector
                                             if (DecodeFileUriToWindowsPath(folderUri, winPath2))
                                             {
                                                 openedFolders.push_back(winPath2);
-                                                AppendLog(std::string("[cursor] fallback lastActiveWindow folder: ") + winPath2);
+                                                // Cursor回退文件夹路径日志已删除
                                             }
                                             else
                                             {
-                                                AppendLog(std::string("[cursor] failed to decode lastActiveWindow folder URI: ") + folderUri);
+                                                // Cursor回退URI解码失败日志已删除
                                             }
                                         }
                                     }
@@ -1613,16 +1610,13 @@ namespace VSInspector
             g_wechatRunning = foundWechatRunning;
             g_currentWechatPath = foundWechatPath;  // 更新当前检测到的路径
         }
-        AppendLog(std::string("[vs] RefreshVSInstances: end, instances=") + std::to_string((int)g_vsList.size()));
-        AppendLog(std::string("[cursor] RefreshCursorInstances: end, instances=") + std::to_string((int)g_cursorList.size()));
-        AppendLog(std::string("[feishu] Status: ") + (g_feishuRunning ? "Running" : "Not running") + (g_feishuPath.empty() ? "" : " Path: " + g_feishuPath));
-        AppendLog(std::string("[wechat] Status: ") + (g_wechatRunning ? "Running" : "Not running") + (g_wechatPath.empty() ? "" : " Path: " + g_wechatPath));
+        // VS实例刷新结束日志已删除
+        // Cursor实例刷新结束日志已删除
+        // 飞书状态日志已删除
+        // 微信状态日志已删除
         for (const auto& inst : g_vsList)
         {
-            AppendLog(std::string("[vs] summary pid=") + std::to_string((unsigned long)inst.pid)
-                + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle)
-                + std::string(" solution=") + (inst.solutionPath.empty()?"<none>":inst.solutionPath)
-                + std::string(" activeDoc=") + (inst.activeDocumentPath.empty()?"<none>":inst.activeDocumentPath));
+            // VS实例汇总日志已删除
         }
     }
 
