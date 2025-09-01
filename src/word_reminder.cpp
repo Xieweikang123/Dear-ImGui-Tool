@@ -464,6 +464,8 @@ namespace WordReminder
     static HBRUSH g_cardBrush = nullptr; // 内容卡片背景，用于编辑框背景
     static POINT g_windowPosition = {-1, -1}; // 记住窗口位置，-1表示使用默认位置
     static HWND g_textEdit = nullptr; // 可复制阅读的只读文本控件
+    static HBRUSH g_scrollbarBrush = nullptr; // 滚动条背景画刷
+    static HBRUSH g_scrollbarThumbBrush = nullptr; // 滚动条滑块画刷
     
     // 状态管理变量 - 用于跟踪当前显示的单词列表
     static std::vector<WordEntry> g_currentDisplayedWords; // 当前正在窗口上显示的单词列表
@@ -714,6 +716,21 @@ namespace WordReminder
                     g_btnBgBrush = CreateSolidBrush(clrWnd);
                 }
 
+                // 准备滚动条画刷
+                {
+                    COLORREF clrScrollbar = g_darkMode ? RGB(64, 64, 72) : RGB(220, 224, 228);
+                    COLORREF clrThumb = g_darkMode ? RGB(100, 100, 108) : RGB(180, 184, 188);
+                    
+                    if (g_scrollbarBrush) { DeleteObject(g_scrollbarBrush); g_scrollbarBrush = nullptr; }
+                    if (g_scrollbarThumbBrush) { DeleteObject(g_scrollbarThumbBrush); g_scrollbarThumbBrush = nullptr; }
+                    
+                    g_scrollbarBrush = CreateSolidBrush(clrScrollbar);
+                    g_scrollbarThumbBrush = CreateSolidBrush(clrThumb);
+                    
+                    AppendLog("[滚动调试] 创建滚动条画刷: 背景色=" + std::to_string(clrScrollbar) + 
+                             ", 滑块色=" + std::to_string(clrThumb));
+                }
+
                 // 初始透明并淡入
                 g_animOpacity = 0;
                 SetLayeredWindowAttributes(hwnd, 0, g_animOpacity, LWA_ALPHA);
@@ -757,7 +774,6 @@ namespace WordReminder
                         break;
                 }
                 
-                SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             }
@@ -773,8 +789,66 @@ namespace WordReminder
                          ", 新scrollPos=" + std::to_string(g_scrollPos) + 
                          ", scrollMax=" + std::to_string(g_scrollMax));
                 
-                SetScrollPos(hwnd, SB_VERT, g_scrollPos, TRUE);
                 InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            case WM_LBUTTONDOWN:
+            {
+                int x = LOWORD(lParam);
+                int y = HIWORD(lParam);
+                
+                // 检查是否点击在滚动条区域
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                int scrollbarWidth = 16;
+                int scrollbarX = rc.right - scrollbarWidth;
+                
+                if (x >= scrollbarX && g_scrollMax > 0)
+                {
+                    // 计算滑块位置
+                    int scrollbarHeight = rc.bottom - rc.top;
+                    int thumbHeight = std::max(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
+                    int thumbY = (g_scrollPos * (scrollbarHeight - thumbHeight)) / g_scrollMax;
+                    
+                    if (y >= thumbY && y <= thumbY + thumbHeight)
+                    {
+                        // 点击在滑块上，开始拖动
+                        SetCapture(hwnd);
+                        AppendLog("[滚动调试] 开始拖动滚动条滑块");
+                    }
+                    else
+                    {
+                        // 点击在滚动条轨道上，跳转到对应位置
+                        int newPos = (y * g_scrollMax) / scrollbarHeight;
+                        g_scrollPos = std::max(0, std::min(g_scrollMax, newPos));
+                        AppendLog("[滚动调试] 点击滚动条轨道: 新位置=" + std::to_string(g_scrollPos));
+                        InvalidateRect(hwnd, nullptr, TRUE);
+                    }
+                }
+                return 0;
+            }
+            case WM_MOUSEMOVE:
+            {
+                if (GetCapture() == hwnd)
+                {
+                    int y = HIWORD(lParam);
+                    RECT rc;
+                    GetClientRect(hwnd, &rc);
+                    int scrollbarHeight = rc.bottom - rc.top;
+                    
+                    int newPos = (y * g_scrollMax) / scrollbarHeight;
+                    g_scrollPos = std::max(0, std::min(g_scrollMax, newPos));
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
+                return 0;
+            }
+            case WM_LBUTTONUP:
+            {
+                if (GetCapture() == hwnd)
+                {
+                    ReleaseCapture();
+                    AppendLog("[滚动调试] 结束拖动滚动条滑块: 最终位置=" + std::to_string(g_scrollPos));
+                }
                 return 0;
             }
             case WM_SIZE:
@@ -992,6 +1066,36 @@ namespace WordReminder
                     }
                 }
 
+                // 绘制自定义滚动条
+                if (g_scrollMax > 0)
+                {
+                    int scrollbarWidth = 16; // 滚动条宽度
+                    int scrollbarX = rc.right - scrollbarWidth;
+                    int scrollbarY = rc.top;
+                    int scrollbarHeight = rc.bottom - rc.top;
+                    
+                    // 绘制滚动条背景
+                    RECT scrollbarRect = { scrollbarX, scrollbarY, rc.right, rc.bottom };
+                    if (g_scrollbarBrush)
+                    {
+                        FillRect(memDC, &scrollbarRect, g_scrollbarBrush);
+                    }
+                    
+                    // 计算滑块位置和大小
+                    int thumbHeight = std::max(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
+                    int thumbY = scrollbarY + (g_scrollPos * (scrollbarHeight - thumbHeight)) / g_scrollMax;
+                    
+                    // 绘制滑块
+                    RECT thumbRect = { scrollbarX + 2, thumbY, rc.right - 2, thumbY + thumbHeight };
+                    if (g_scrollbarThumbBrush)
+                    {
+                        FillRect(memDC, &thumbRect, g_scrollbarThumbBrush);
+                    }
+                    
+                    AppendLog("[滚动调试] 绘制自定义滚动条: 位置=" + std::to_string(scrollbarX) + 
+                             ", 滑块位置=" + std::to_string(thumbY) + ", 滑块高度=" + std::to_string(thumbHeight));
+                }
+                
                 // 一次性将内存DC的内容复制到屏幕DC
                 BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memDC, 0, 0, SRCCOPY);
                 
@@ -1150,6 +1254,8 @@ namespace WordReminder
         if (g_fontWord) { DeleteObject(g_fontWord); g_fontWord = nullptr; }
                 if (g_fontButton) { DeleteObject(g_fontButton); g_fontButton = nullptr; }
                 if (g_btnBgBrush) { DeleteObject(g_btnBgBrush); g_btnBgBrush = nullptr; }
+                if (g_scrollbarBrush) { DeleteObject(g_scrollbarBrush); g_scrollbarBrush = nullptr; }
+                if (g_scrollbarThumbBrush) { DeleteObject(g_scrollbarThumbBrush); g_scrollbarThumbBrush = nullptr; }
                 return 0;
             }
         }
@@ -1263,17 +1369,13 @@ namespace WordReminder
                         AppendLog("[滚动调试] 强制设置滚动范围: " + std::to_string(g_scrollMax) + " (测试用)");
                     }
                     
-                    SetScrollRange(g_reminderHwnd, SB_VERT, 0, g_scrollMax, TRUE);
-                    SetScrollPos(g_reminderHwnd, SB_VERT, g_scrollPos, TRUE);
-                    ShowScrollBar(g_reminderHwnd, SB_VERT, TRUE);
-                    AppendLog("[滚动调试] 显示滚动条: 范围0-" + std::to_string(g_scrollMax) + 
+                    AppendLog("[滚动调试] 显示自定义滚动条: 范围0-" + std::to_string(g_scrollMax) + 
                              ", 位置=" + std::to_string(g_scrollPos));
                 }
                 else
                 {
-                    ShowScrollBar(g_reminderHwnd, SB_VERT, FALSE);
                     g_scrollPos = 0;
-                    AppendLog("[滚动调试] 隐藏滚动条: 内容不超出区域");
+                    AppendLog("[滚动调试] 隐藏自定义滚动条: 内容不超出区域");
                 }
                 
                 if (old) SelectObject(hdc, old);
@@ -1344,12 +1446,14 @@ namespace WordReminder
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_COMPOSITED,
             wc.lpszClassName,
             L"提醒",
-            WS_CAPTION | WS_VSCROLL,
+            WS_CAPTION, // 移除 WS_VSCROLL，使用自定义滚动条
             x, y, width, height,
             nullptr, nullptr, wc.hInstance, nullptr);
         
+
+        
         // 添加窗口创建调试日志
-        AppendLog("[滚动调试] 窗口创建: 样式包含WS_VSCROLL, 尺寸=" + std::to_string(width) + "x" + std::to_string(height) + 
+        AppendLog("[滚动调试] 窗口创建: 使用自定义滚动条, 尺寸=" + std::to_string(width) + "x" + std::to_string(height) + 
                  ", 位置=" + std::to_string(x) + "," + std::to_string(y) + 
                  ", 窗口句柄=" + (g_reminderHwnd ? "有效" : "无效"));
 
@@ -1390,10 +1494,7 @@ namespace WordReminder
             
             if (g_scrollMax > 0)
             {
-                SetScrollRange(g_reminderHwnd, SB_VERT, 0, g_scrollMax, TRUE);
-                SetScrollPos(g_reminderHwnd, SB_VERT, g_scrollPos, TRUE);
-                ShowScrollBar(g_reminderHwnd, SB_VERT, TRUE);
-                AppendLog("[滚动调试] 窗口创建后显示滚动条: 范围0-" + std::to_string(g_scrollMax));
+                AppendLog("[滚动调试] 窗口创建后设置滚动范围: 范围0-" + std::to_string(g_scrollMax));
             }
             
             if (old) SelectObject(hdc, old);
