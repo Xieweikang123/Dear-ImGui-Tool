@@ -1,0 +1,46 @@
+---
+alwaysApply: true
+description: General engineering practices for this project (logging, compile-only, small changes, Windows patterns)
+---
+# 通用工程实践规则
+
+## 构建与运行
+- 代码改动后只编译不运行：使用 `[build-only.bat](mdc:build-only.bat)`
+- 仅在用户明确要求时运行可执行文件
+
+## 变更节奏
+- 一次只做一个最小可验证的改动，编译验证后再继续
+- 优先加日志验证假设，再修改逻辑
+
+## 日志规范
+- 使用 `ReplaceTool::AppendLog()`；包含前缀：`[vs]`, `[window]`, `[cursor]` 等
+- 关键点记录：调用返回值、状态变更、重要变量
+- 示例：
+```cpp
+AppendLog("[vs] EnumRunning hr=" + std::to_string((long)hrEnum));
+AppendLog("[vs] Solution.FullName = " + slnPath);
+```
+
+## Windows/COM 调试通用规则
+- 权限一致性：管理员与普通权限不可互访ROT
+- 进程位数匹配：x86 与 x64 枚举互不可见
+- COM 初始化：确保 `CoInitializeEx` 成功；必要时设置 `CoInitializeSecurity`
+- 事件与资源：创建→配置→显示→更新；创建的对象要释放
+
+## UI 展示一致性
+- 即使数据缺失也显示交互控件（例如“Use this solution”复选框）
+- 显示占位符文本 `<no ...>` 但保留可选操作
+
+## 失败优先与边界处理
+- `FAILED(hr)` 立即返回并记录错误，避免继续错误路径
+- 对空、无、越界、权限不足等情况做显式分支
+
+## 代码风格要点
+- 函数和变量使用有意义的完整命名
+- 避免深层嵌套，采用早返回
+- 明确资源生命周期与异常路径
+
+## 关联文件
+- [main.cpp](mdc:main.cpp)
+- [src/vs_inspector.cpp](mdc:src/vs_inspector.cpp)
+- [docs/vs_inspector_debugging_guide.md](mdc:docs/vs_inspector_debugging_guide.md)

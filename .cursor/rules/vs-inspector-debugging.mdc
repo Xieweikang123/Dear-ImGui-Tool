@@ -1,0 +1,80 @@
+---
+description: VS Inspector debugging patterns and common issues
+alwaysApply: false
+---
+# VS Inspector 调试规则
+
+## 权限和ROT问题
+
+当VS Inspector无法检测到解决方案路径时，首先检查权限级别：
+
+### 权限级别不匹配
+- **现象**：ROT枚举返回空结果，所有VS实例显示`<no solution detected>`
+- **原因**：工具与VS进程权限级别不一致（管理员 vs 普通用户）
+- **解决**：确保两者使用相同权限级别
+
+### 进程位数不匹配
+- **现象**：x86工具无法检测x64 VS进程，反之亦然
+- **解决**：使用匹配的位数版本
+
+## 调试代码模式
+
+### 权限诊断
+```cpp
+// 检查当前进程权限
+HANDLE hToken;
+if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+{
+    TOKEN_ELEVATION elevation;
+    DWORD size = sizeof(TOKEN_ELEVATION);
+    if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size))
+    {
+        AppendLog(std::string("[vs] Current process elevation: ") + 
+                 (elevation.TokenIsElevated ? "Elevated" : "Not Elevated"));
+    }
+    CloseHandle(hToken);
+}
+```
+
+### ROT枚举验证
+```cpp
+// 验证ROT枚举是否成功
+AppendLog("[vs] GetRunningObjectTable hr=" + std::to_string((long)hrRot));
+AppendLog("[vs] EnumRunning hr=" + std::to_string((long)hrEnum));
+// 成功标志：hr=0 (S_OK)
+```
+
+### 解决方案路径映射
+```cpp
+// 将检测到的解决方案路径映射到VSInstance
+if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
+{
+    std::string slnPath = WideToUtf8(std::wstring(resultFullName.bstrVal));
+    DWORD pidFinal = ParsePidFromRotName(displayName);
+    if (pidFinal == 0) {
+        GetPidFromDTE(pDisp, pidFinal);
+    }
+    if (pidFinal != 0) {
+        for (auto& inst : found) {
+            if (inst.pid == pidFinal) {
+                inst.solutionPath = slnPath;
+                break;
+            }
+        }
+    }
+}
+```
+
+## 常见问题排查顺序
+
+1. **检查权限级别**：工具与VS是否使用相同权限
+2. **检查进程位数**：x86/x64是否匹配
+3. **验证ROT枚举**：日志中是否有`GetRunningObjectTable hr=0`
+4. **检查DTE对象**：是否找到`!VisualStudio.DTE`条目
+5. **验证解决方案路径**：`Solution.FullName`是否非空
+6. **检查映射逻辑**：路径是否正确映射到`VSInstance.solutionPath`
+
+## 相关文件
+
+- [src/vs_inspector.cpp](mdc:src/vs_inspector.cpp) - 主要实现
+- [docs/vs_inspector_debugging_guide.md](mdc:docs/vs_inspector_debugging_guide.md) - 详细调试指南

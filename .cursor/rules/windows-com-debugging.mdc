@@ -1,0 +1,89 @@
+---
+description: Windows COM debugging patterns and best practices
+alwaysApply: false
+---
+# Windows COM 调试规则
+
+## COM 初始化和权限问题
+
+### 权限级别隔离
+Windows ROT (Running Object Table) 按用户会话和完整性级别隔离：
+- 管理员权限进程无法访问普通用户权限进程的ROT
+- 普通用户权限进程无法访问管理员权限进程的ROT
+- 解决方案：确保所有相关进程使用相同权限级别
+
+### COM 安全初始化
+```cpp
+// 初始化COM安全设置
+static bool comSecurityInitialized = false;
+if (!comSecurityInitialized)
+{
+    HRESULT hrSecurity = CoInitializeSecurity(
+        NULL, -1, NULL, NULL, 
+        RPC_C_AUTHN_LEVEL_DEFAULT, 
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        NULL, EOAC_NONE, NULL
+    );
+    if (SUCCEEDED(hrSecurity))
+    {
+        comSecurityInitialized = true;
+        AppendLog("[com] COM security initialized");
+    }
+}
+```
+
+## 调试模式
+
+### 分步日志记录
+```cpp
+// 在每个COM调用后记录结果
+AppendLog("[com] GetRunningObjectTable hr=" + std::to_string((long)hr));
+AppendLog("[com] EnumRunning hr=" + std::to_string((long)hrEnum));
+AppendLog("[com] Next hr=" + std::to_string((long)hrNext) + ", fetched=" + std::to_string(fetched));
+```
+
+### 权限诊断
+```cpp
+// 检查进程权限级别
+BOOL isElevated = FALSE;
+HANDLE hToken = NULL;
+if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+{
+    TOKEN_ELEVATION elevation;
+    DWORD dwSize = 0;
+    if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize))
+    {
+        isElevated = elevation.TokenIsElevated;
+    }
+    CloseHandle(hToken);
+}
+AppendLog(std::string("[com] Process elevation: ") + (isElevated ? "elevated" : "standard"));
+```
+
+### 进程位数检查
+```cpp
+// 检查进程位数
+BOOL isWow64 = FALSE;
+IsWow64Process(GetCurrentProcess(), &isWow64);
+AppendLog(std::string("[com] Process bitness: ") + (sizeof(void*)==8?"x64":"x86") + (isWow64?" (WOW64)":""));
+```
+
+## 常见错误码
+
+- `hr=0` (S_OK): 成功
+- `hr=1` (S_FALSE): 成功但无数据（如枚举结束）
+- `hr=0x80070005` (E_ACCESSDENIED): 权限不足
+- `hr=0x800401E3` (CO_E_NOTINITIALIZED): COM未初始化
+
+## 最佳实践
+
+1. **权限一致性**：确保所有相关进程使用相同权限级别
+2. **位数匹配**：x86/x64进程无法直接通信
+3. **资源清理**：正确释放COM对象和句柄
+4. **错误处理**：检查每个COM调用的返回值
+5. **分步调试**：在每个关键步骤添加日志
+
+## 相关文件
+
+- [src/vs_inspector.cpp](mdc:src/vs_inspector.cpp) - COM使用示例
+- [docs/vs_inspector_debugging_guide.md](mdc:docs/vs_inspector_debugging_guide.md) - 详细调试指南
