@@ -1979,7 +1979,7 @@ namespace VSInspector
         }
         
         static bool comSecurityInitialized = false;
-        if (didCoInit && !comSecurityInitialized)
+        if (!comSecurityInitialized)
         {
             // 设置更宽松的COM安全级别以访问ROT
             HRESULT hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
@@ -2001,8 +2001,41 @@ namespace VSInspector
                     comSecurityInitialized = true;
                     AppendLog("[vs] COM security initialized with fallback settings");
                 }
+                else
+                {
+                    // 一些情况下可能已由其他组件初始化（RPC_E_TOO_LATE）
+                    AppendLog("[vs] COM security not changed (possibly already initialized elsewhere)");
+                }
             }
         }
+        // Diagnostic: COM apartment type
+        APTTYPE aptType = APTTYPE_CURRENT;
+        APTTYPEQUALIFIER aptQual = APTTYPEQUALIFIER_NONE;
+        HRESULT hrApt = CoGetApartmentType(&aptType, &aptQual);
+        AppendLog(std::string("[vs] CoGetApartmentType hr=") + std::to_string((long)hrApt) +
+                  std::string(" aptType=") + std::to_string((int)aptType) +
+                  std::string(" aptQual=") + std::to_string((int)aptQual));
+
+        // Diagnostic: Process elevation
+        BOOL isElevated = FALSE;
+        HANDLE hTokenDiag = NULL;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hTokenDiag))
+        {
+            TOKEN_ELEVATION elevation;
+            DWORD dwSize = 0;
+            if (GetTokenInformation(hTokenDiag, TokenElevation, &elevation, sizeof(elevation), &dwSize))
+            {
+                isElevated = elevation.TokenIsElevated;
+            }
+            CloseHandle(hTokenDiag);
+        }
+        AppendLog(std::string("[vs] Elevation: ") + (isElevated ? "elevated" : "standard"));
+
+        // Diagnostic: Process bitness
+        BOOL isWow64 = FALSE;
+        IsWow64Process(GetCurrentProcess(), &isWow64);
+        AppendLog(std::string("[vs] Bitness: ") + (sizeof(void*)==8?"x64":"x86") + (isWow64?" (WOW64)":""));
+
         IRunningObjectTable* pRot = NULL;
         IEnumMoniker* pEnum = NULL;
         HRESULT hrRot = GetRunningObjectTable(0, &pRot);
@@ -2015,49 +2048,273 @@ namespace VSInspector
             
             if (SUCCEEDED(hrEnum) && pEnum)
             {
+
+                //log
+                AppendLog("[vs] GetRunningObjectTable succeeded");
+                AppendLog("[vs]   EnumRunning succeeded");
+    
+                // 扫描所有ROT条目
+                std::vector<std::string> allEntries;
+                std::vector<std::string> vsEntries;
+                
+                IMoniker* monikers[1];
                 ULONG fetched = 0;
                 int count = 0;
-                CComPtr<IMoniker> spMoniker;
+                
+                AppendLog("[vs]  5. Scanning ROT entries...");
+                
+                bool anyRotEntries = false;
+                
+                for (;;)
+                {
+                    HRESULT hrNext = pEnum->Next(1, monikers, &fetched);
+                    if (hrNext == S_OK)
+                    {
+                        anyRotEntries = true;
+                        AppendLog("[vs]  in Next succeeded");
+
+                        IBindCtx* pCtx = NULL;
+                        hr = CreateBindCtx(0, &pCtx);
+                        if (SUCCEEDED(hr))
+                        {
+                            LPOLESTR displayName = NULL;
+                            hr = monikers[0]->GetDisplayName(pCtx, NULL, &displayName);
+                            if (SUCCEEDED(hr))
+                            {
+                                std::wstring ws(displayName);
+                                std::string s = WideToUtf8(ws);
+                                allEntries.push_back(s);
+                                
+                                //log
+                                AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                AppendLog("[vs]  Entry " + std::to_string(count) + ": " + s);
+                                
+                                // 检查是否是Visual Studio DTE对象
+                                if (s.find("!VisualStudio.DTE") != std::string::npos)
+                                {
+                                    vsEntries.push_back(s);
+                                    //log
+                                    AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                    AppendLog("[vs]  *** Found Visual Studio DTE object! ***");
+                                    
+                                    // 尝试获取COM对象
+                                    IUnknown* pUnk = NULL;
+                                    hr = pRot->GetObject(monikers[0], &pUnk);
+                                    if (SUCCEEDED(hr) && pUnk)
+                                    {
+                                        //log
+                                        AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                        AppendLog("[vs]  Successfully got COM object");
+                                        
+                                        // 获取IDispatch接口
+                                        IDispatch* pDisp = NULL;
+                                        hr = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
+                                        if (SUCCEEDED(hr) && pDisp)
+                                        {
+                                            //log
+                                            AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                            AppendLog("[vs]  Successfully got IDispatch interface");
+                                            
+                                            // 尝试获取Solution属性
+                                            DISPID dispidSolution = 0;
+                                            OLECHAR* nameSolution = L"Solution";
+                                            hr = pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution);
+                                            if (SUCCEEDED(hr))
+                                            {
+                                                //log
+                                                AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                                AppendLog("[vs]  Got Solution DISPID: " + std::to_string(dispidSolution));
+                                                
+                                                // 调用Solution属性
+                                                VARIANT resultSolution;
+                                                VariantInit(&resultSolution);
+                                                DISPPARAMS noArgs = {0};
+                                                hr = pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL);
+                                                if (SUCCEEDED(hr))
+                                                {
+                                                    //log
+                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                                    AppendLog("[vs]  Successfully invoked Solution property, vt=" + std::to_string(resultSolution.vt));
+                                                    
+                                                    if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
+                                                    {
+                                                        //log
+                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+ 
+                                                        AppendLog("[vs]  Solution is a dispatch object");
+                                                        
+                                                        // 尝试获取FullName属性
+                                                        IDispatch* pSolution = resultSolution.pdispVal;
+                                                        DISPID dispidFullName = 0;
+                                                        OLECHAR* nameFullName = L"FullName";
+                                                        hr = pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName);
+                                                        if (SUCCEEDED(hr))
+                                                        {
+                                                        //log
+                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                        AppendLog("[vs]  Got FullName DISPID: " + std::to_string(dispidFullName));
+                                                        
+                                                        // 调用FullName属性
+                                                        VARIANT resultFullName;
+                                                        VariantInit(&resultFullName);
+                                                        hr = pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL);
+                                                        if (SUCCEEDED(hr))
+                                                        {
+                                                            //log
+                                                            AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                            AppendLog("[vs]  Successfully invoked FullName property, vt=" + std::to_string(resultFullName.vt));
+                                                            
+                                                            if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
+                                                            {
+                                                                std::wstring ws(resultFullName.bstrVal);
+                                                                std::string slnPath = WideToUtf8(ws);
+                                                                //log
+                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                                AppendLog("[vs]  *** Solution.FullName = " + slnPath + " ***");
+                                                                // Map this solution path to the corresponding VSInstance by PID
+                                                                DWORD pidFromName = 0;
+                                                                // Prefer fast parse from ROT display name
+                                                                ParsePidFromRotName(std::wstring(displayName), pidFromName);
+                                                                DWORD pidFinal = pidFromName;
+                                                                if (pidFinal == 0)
+                                                                {
+                                                                    // Fallback to querying DTE -> MainWindow.HWnd -> PID
+                                                                    DWORD pidFromDte = 0;
+                                                                    if (GetPidFromDTE(pDisp, pidFromDte))
+                                                                        pidFinal = pidFromDte;
+                                                                }
+                                                                if (pidFinal != 0)
+                                                                {
+                                                                    for (auto& inst : found)
+                                                                    {
+                                                                        if (inst.pid == pidFinal)
+                                                                        {
+                                                                            inst.solutionPath = slnPath;
+                                                                            AppendLog(std::string("[vs]  Mapped solution to pid=") + std::to_string((unsigned long)pidFinal));
+                                                                            break;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            else if (resultFullName.vt == VT_EMPTY || resultFullName.vt == VT_NULL)
+                                                            {
+                                                                //log
+                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                                AppendLog("[vs]  Solution.FullName is empty - VS may be in Open Folder mode");
+                                                            }
+                                                            else
+                                                            {
+                                                                //log
+                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                                AppendLog("[vs]  FullName unexpected vt=" + std::to_string(resultFullName.vt));
+                                                            }
+                                                            VariantClear(&resultFullName);
+                                                        }
+                                                        else
+                                                        {
+                                                            //log
+                                                            AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                            AppendLog("[vs]  Failed to invoke FullName property: " + std::to_string(hr));
+                                                        }
+                                                    }
+                                                    else
+                                                    {
+                                                        //log
+                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                        AppendLog("[vs]  Failed to get FullName DISPID: " + std::to_string(hr));
+                                                    }
+                                                }
+                                                else if (resultSolution.vt == VT_EMPTY || resultSolution.vt == VT_NULL)
+                                                {
+                                                    //log
+                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                    AppendLog("[vs]  Solution is empty - VS may be in Open Folder mode");
+                                                }
+                                                else
+                                                {
+                                                    //log
+                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                    AppendLog("[vs]  Solution is not a dispatch object, vt=" + std::to_string(resultSolution.vt));
+                                                }
+                                                VariantClear(&resultSolution);
+                                            }
+                                            else
+                                            {
+                                                //log
+                                                AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                                AppendLog("[vs]  Failed to invoke Solution property: " + std::to_string(hr));
+                                            }
+                                        }
+                                        else
+                                        {
+                                            //log
+                                            AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                            AppendLog("[vs]  Failed to get Solution DISPID: " + std::to_string(hr));
+                                        }
+                                        pDisp->Release();
+                                    }
+                                    else
+                                    {
+                                        //log
+                                        AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                        AppendLog("[vs]  Failed to get IDispatch interface: " + std::to_string(hr));
+                                    }
+                                    pUnk->Release();
+                                }
+                                else
+                                {
+                                    //log
+                                    AppendLog("[vs]  in GetDisplayName succeeded");
+
+                                    AppendLog("[vs]  Failed to get COM object: " + std::to_string(hr));
+                                }
+                            }
+                            
+                            CoTaskMemFree(displayName);
+                        }
+                        pCtx->Release();
+                        }
+                        
+                        monikers[0]->Release();
+                        count++;
+                    }
+                    else
+                    {
+                        AppendLog(std::string("[vs]  Next returned hr=") + std::to_string((long)hrNext));
+                        break;
+                    }
+                }
+                
+                if (!anyRotEntries)
+                {
+                    AppendLog("[vs]  ROT enumeration returned no entries (Next != S_OK). Possible causes: ROT empty or access denied.");
+                }
+
+                            
         
-                                 // 枚举所有 moniker，处理DTE对象
-                 while (pEnum->Next(1, &spMoniker, &fetched) == S_OK)
-                 {
-                     CComPtr<IBindCtx> spCtx;
-                     CreateBindCtx(0, &spCtx);
-         
-                     LPOLESTR displayName = nullptr;
-                     if (SUCCEEDED(spMoniker->GetDisplayName(spCtx, nullptr, &displayName)))
-                     {
-                         std::wstring ws(displayName);
-                         std::string s(ws.begin(), ws.end());
-                         AppendLog("[vs] ROT entry: " + s);
-                         
-                         // 检查是否是Visual Studio DTE对象
-                         if (s.find("!VisualStudio.DTE") != std::string::npos)
-                         {
-                             AppendLog("[vs] Found Visual Studio DTE object: " + s);
-                             
-                             // 解析PID
-                             DWORD pidHint = 0;
-                             ParsePidFromRotName(ws, pidHint);
-                             AppendLog("[vs] Parsed PID hint: " + std::to_string((unsigned long)pidHint));
-                             
-                             // 处理DTE moniker
-                             ProcessDteMoniker(pRot, spMoniker, found, pidHint);
-                         }
-                         
-                         CoTaskMemFree(displayName);
-                     }
-         
-                     spMoniker.Release();
-                     count++;
-                 }
-        
-                AppendLog("[vs] Total ROT entries enumerated: " + std::to_string(count));
+                // AppendLog("[vs] Total ROT entries enumerated: " + std::to_string(count));
             }
             else
             {
-                AppendLog("[vs] EnumRunning failed");
+                AppendLog("[vs] GetRunningObjectTable failed");
             }
         }
         else
