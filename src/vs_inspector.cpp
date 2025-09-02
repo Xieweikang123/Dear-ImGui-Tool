@@ -12,13 +12,17 @@
 #include <ctime>
 #ifdef _WIN32
 #include <windows.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <objbase.h>
 #include <oleauto.h>
+#include <shlobj.h>
 #include <filesystem>
 #include <commdlg.h>
+#include <atlbase.h>
+#include <atlcom.h>
 #pragma comment(lib, "Comdlg32.lib")
 namespace fs = std::filesystem;
 #endif
@@ -70,6 +74,7 @@ namespace VSInspector
     // Selections and persistence
     static std::vector<SavedConfig> g_savedConfigs;
     static std::string g_selectedSlnPath;
+    static std::unordered_set<std::string> g_selectedSlnPaths;
     static std::string g_selectedCursorFolder;
     static std::unordered_set<std::string> g_selectedCursorFolders;
     static std::string g_currentConfigName;
@@ -570,7 +575,10 @@ namespace VSInspector
                  g_selectedCursorFolder = config.cursorFolderPath;
                  g_feishuPath = config.feishuPath;
                  g_wechatPath = config.wechatPath;
-                 // Keep the multi-select set in sync with single selection
+                 // Keep the multi-select sets in sync with single selection
+                 g_selectedSlnPaths.clear();
+                 if (!g_selectedSlnPath.empty())
+                     g_selectedSlnPaths.insert(g_selectedSlnPath);
                  g_selectedCursorFolders.clear();
                  if (!g_selectedCursorFolder.empty())
                      g_selectedCursorFolders.insert(g_selectedCursorFolder);
@@ -1080,40 +1088,63 @@ namespace VSInspector
     {
         slnOut.clear();
         if (!pDisp) return false;
-        DISPID dispidSolution = 0; OLECHAR* nameSolution = L"Solution";
+        
+        AppendLog("[vs] TryGetSolutionFullName: starting...");
+        
+        DISPID dispidSolution = 0; 
+        OLECHAR* nameSolution = L"Solution";
         if (FAILED(pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution)))
         {
             AppendLog("[vs] GetIDsOfNames(Solution) failed");
             return false;
         }
-        VARIANT resultSolution; VariantInit(&resultSolution); DISPPARAMS noArgs = {0};
+        
+        AppendLog("[vs] Got Solution DISPID: " + std::to_string(dispidSolution));
+        
+        VARIANT resultSolution; 
+        VariantInit(&resultSolution); 
+        DISPPARAMS noArgs = {0};
         HRESULT hrInvokeSolution = pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL);
         if (FAILED(hrInvokeSolution))
         {
             AppendLog(std::string("[vs] Invoke(Solution) failed hr=") + std::to_string((long)hrInvokeSolution));
+            VariantClear(&resultSolution);
             return false;
         }
+        
+        AppendLog("[vs] Successfully invoked Solution property, vt=" + std::to_string((int)resultSolution.vt));
+        
         bool ok = false;
         if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
         {
+            AppendLog("[vs] Solution is a dispatch object");
             IDispatch* pSolution = resultSolution.pdispVal;
-            DISPID dispidFullName = 0; OLECHAR* nameFullName = L"FullName";
+            DISPID dispidFullName = 0; 
+            OLECHAR* nameFullName = L"FullName";
             HRESULT hrNameFN = pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName);
             if (SUCCEEDED(hrNameFN))
             {
-                VARIANT resultFullName; VariantInit(&resultFullName);
+                AppendLog("[vs] Got FullName DISPID: " + std::to_string(dispidFullName));
+                VARIANT resultFullName; 
+                VariantInit(&resultFullName);
                 HRESULT hrInvokeFN = pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL);
                 if (SUCCEEDED(hrInvokeFN))
                 {
+                    AppendLog("[vs] Successfully invoked FullName property, vt=" + std::to_string((int)resultFullName.vt));
                     if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
                     {
                         slnOut = WideToUtf8(resultFullName.bstrVal);
                         AppendLog(std::string("[vs] Solution.FullName=") + slnOut);
                         ok = !slnOut.empty();
                     }
+                    else if (resultFullName.vt == VT_EMPTY || resultFullName.vt == VT_NULL)
+                    {
+                        AppendLog("[vs] Solution.FullName is empty or null - VS may be in Open Folder mode");
+                        ok = false; // 空solution，但不算错误
+                    }
                     else
                     {
-                        AppendLog(std::string("[vs] Solution.FullName vt=") + std::to_string((int)resultFullName.vt));
+                        AppendLog(std::string("[vs] Solution.FullName unexpected vt=") + std::to_string((int)resultFullName.vt));
                     }
                 }
                 else
@@ -1126,6 +1157,15 @@ namespace VSInspector
             {
                 AppendLog(std::string("[vs] GetIDsOfNames(FullName) failed hr=") + std::to_string((long)hrNameFN));
             }
+        }
+        else if (resultSolution.vt == VT_EMPTY || resultSolution.vt == VT_NULL)
+        {
+            AppendLog("[vs] Solution is empty or null - VS may be in Open Folder mode");
+            ok = false; // 空solution，但不算错误
+        }
+        else
+        {
+            AppendLog(std::string("[vs] Solution is not a dispatch object, vt=") + std::to_string((int)resultSolution.vt));
         }
         VariantClear(&resultSolution);
         return ok;
@@ -1159,6 +1199,299 @@ namespace VSInspector
             depth++;
         }
         if (slnOut.empty()) AppendLog(std::string("[vs] No .sln found near ") + startDir.string());
+    }
+
+
+
+
+
+
+
+
+
+
+
+    // Step 2: 通过进程文件句柄枚举获取solution路径（需要管理员权限）
+    static std::string TryGetSolutionFromProcessHandles(DWORD pid)
+    {
+        AppendLog("[vs] TryGetSolutionFromProcessHandles: pid=" + std::to_string((unsigned long)pid));
+        
+        // 需要管理员权限才能枚举其他进程的句柄
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (!hProcess) 
+        {
+            AppendLog("[vs] TryGetSolutionFromProcessHandles: OpenProcess failed - need admin privileges");
+            return "";
+        }
+        
+        // 使用NtQuerySystemInformation获取系统句柄信息
+        typedef NTSTATUS (WINAPI *PNtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (!hNtdll)
+        {
+            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get ntdll.dll");
+            CloseHandle(hProcess);
+            return "";
+        }
+        
+        PNtQuerySystemInformation NtQuerySystemInformation = 
+            (PNtQuerySystemInformation)GetProcAddress(hNtdll, "NtQuerySystemInformation");
+        if (!NtQuerySystemInformation)
+        {
+            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get NtQuerySystemInformation");
+            CloseHandle(hProcess);
+            return "";
+        }
+        
+        // 获取系统句柄信息
+        ULONG bufferSize = 0x10000;
+        PVOID buffer = VirtualAlloc(NULL, bufferSize, MEM_COMMIT, PAGE_READWRITE);
+        if (!buffer)
+        {
+            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to allocate buffer");
+            CloseHandle(hProcess);
+            return "";
+        }
+        
+        NTSTATUS status = NtQuerySystemInformation(16, buffer, bufferSize, &bufferSize); // SystemHandleInformation
+        if (status != 0)
+        {
+            AppendLog("[vs] TryGetSolutionFromProcessHandles: NtQuerySystemInformation failed with status " + std::to_string(status));
+            VirtualFree(buffer, 0, MEM_RELEASE);
+            CloseHandle(hProcess);
+            return "";
+        }
+        
+        // 解析句柄信息结构
+        typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO {
+            ULONG ProcessId;
+            BYTE ObjectTypeNumber;
+            BYTE Flags;
+            USHORT Handle;
+            PVOID Object;
+            ULONG_PTR GrantedAccess;
+        } SYSTEM_HANDLE_TABLE_ENTRY_INFO, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO;
+        
+        typedef struct _SYSTEM_HANDLE_INFORMATION {
+            ULONG NumberOfHandles;
+            SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
+        } SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
+        
+        PSYSTEM_HANDLE_INFORMATION handleInfo = (PSYSTEM_HANDLE_INFORMATION)buffer;
+        std::vector<std::string> candidateSolutions;
+        
+        for (ULONG i = 0; i < handleInfo->NumberOfHandles; i++)
+        {
+            SYSTEM_HANDLE_TABLE_ENTRY_INFO& handle = handleInfo->Handles[i];
+            
+            // 只检查目标进程的句柄
+            if (handle.ProcessId != pid) continue;
+            
+            // 尝试获取句柄的文件名
+            HANDLE hFile = (HANDLE)handle.Handle;
+            wchar_t fileName[MAX_PATH];
+            DWORD fileNameLen = GetFinalPathNameByHandleW(hFile, fileName, MAX_PATH, FILE_NAME_NORMALIZED);
+            
+            if (fileNameLen > 0 && fileNameLen < MAX_PATH)
+            {
+                std::string filePath = WideToUtf8(fileName);
+                
+                // 检查是否是.sln文件
+                if (filePath.find(".sln") != std::string::npos && 
+                    filePath.find("Dear-ImGui-Tool") == std::string::npos &&
+                    std::filesystem::exists(filePath))
+                {
+                    AppendLog("[vs] TryGetSolutionFromProcessHandles: Found solution handle: " + filePath);
+                    candidateSolutions.push_back(filePath);
+                }
+            }
+        }
+        
+        VirtualFree(buffer, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        
+        // 如果有多个候选，选择与活动文档目录最近的
+        if (!candidateSolutions.empty())
+        {
+            if (candidateSolutions.size() == 1)
+            {
+                AppendLog("[vs] TryGetSolutionFromProcessHandles: Single solution found: " + candidateSolutions[0]);
+                return candidateSolutions[0];
+            }
+            else
+            {
+                AppendLog("[vs] TryGetSolutionFromProcessHandles: Multiple solutions found, using first: " + candidateSolutions[0]);
+                return candidateSolutions[0];
+            }
+        }
+        
+        AppendLog("[vs] TryGetSolutionFromProcessHandles: No solution handles found");
+        return "";
+    }
+    
+    // Step 3: 解析进程命令行，支持.slnf文件
+    static std::string TryGetSolutionFromCommandLine(DWORD pid)
+    {
+        AppendLog("[vs] TryGetSolutionFromCommandLine: pid=" + std::to_string((unsigned long)pid));
+        
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (!hProcess) 
+        {
+            AppendLog("[vs] TryGetSolutionFromCommandLine: OpenProcess failed");
+            return "";
+        }
+        
+        // 获取进程命令行
+        wchar_t commandLine[4096];
+        DWORD commandLineLen = 0;
+        
+        // 使用NtQueryInformationProcess获取命令行
+        typedef NTSTATUS (WINAPI *PNtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll)
+        {
+            PNtQueryInformationProcess NtQueryInformationProcess = 
+                (PNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
+            
+            if (NtQueryInformationProcess)
+            {
+                typedef struct _PROCESS_BASIC_INFORMATION {
+                    PVOID Reserved1;
+                    PVOID PebBaseAddress;
+                    PVOID Reserved2_0;
+                    PVOID Reserved2_1;
+                    PVOID UniqueProcessId;
+                    PVOID Reserved3;
+                } PROCESS_BASIC_INFORMATION;
+                
+                PROCESS_BASIC_INFORMATION pbi;
+                NTSTATUS status = NtQueryInformationProcess(hProcess, 0, &pbi, sizeof(pbi), NULL);
+                if (status == 0 && pbi.PebBaseAddress)
+                {
+                    // 读取PEB中的命令行信息
+                    PVOID commandLinePtr = nullptr;
+                    SIZE_T bytesRead;
+                    if (ReadProcessMemory(hProcess, (PVOID)((BYTE*)pbi.PebBaseAddress + 0x70), &commandLinePtr, sizeof(commandLinePtr), &bytesRead))
+                    {
+                        if (commandLinePtr && ReadProcessMemory(hProcess, commandLinePtr, commandLine, sizeof(commandLine), &bytesRead))
+                        {
+                            commandLineLen = (DWORD)bytesRead / sizeof(wchar_t);
+                        }
+                    }
+                }
+            }
+        }
+        
+        CloseHandle(hProcess);
+        
+        if (commandLineLen > 0)
+        {
+            std::wstring cmdLine(commandLine, commandLineLen);
+            std::string cmdLineUtf8 = WideToUtf8(cmdLine);
+            AppendLog("[vs] Process command line: " + cmdLineUtf8);
+            
+            // 查找.sln或.slnf文件路径
+            size_t slnPos = cmdLineUtf8.find(".sln");
+            size_t slnfPos = cmdLineUtf8.find(".slnf");
+            
+            if (slnfPos != std::string::npos)
+            {
+                // 处理.slnf文件
+                size_t pathStart = cmdLineUtf8.find_last_of(" \t", slnfPos);
+                if (pathStart == std::string::npos) pathStart = 0;
+                else pathStart++;
+                
+                std::string slnfPath = cmdLineUtf8.substr(pathStart, slnfPos + 5 - pathStart);
+                if (std::filesystem::exists(slnfPath))
+                {
+                    AppendLog("[vs] Found .slnf file: " + slnfPath);
+                    
+                    // 解析.slnf文件，查找solution路径
+                    std::ifstream file(slnfPath);
+                    if (file.is_open())
+                    {
+                        std::string line;
+                        while (std::getline(file, line))
+                        {
+                            if (line.find("solution") != std::string::npos && line.find(".sln") != std::string::npos)
+                            {
+                                // 提取solution路径
+                                size_t start = line.find("\"");
+                                size_t end = line.find("\"", start + 1);
+                                if (start != std::string::npos && end != std::string::npos)
+                                {
+                                    std::string slnPath = line.substr(start + 1, end - start - 1);
+                                    if (std::filesystem::exists(slnPath))
+                                    {
+                                        AppendLog("[vs] Resolved .slnf to solution: " + slnPath);
+                                        return slnPath;
+                                    }
+                                }
+                            }
+                        }
+                        file.close();
+                    }
+                }
+            }
+            else if (slnPos != std::string::npos)
+            {
+                // 处理.sln文件
+                size_t pathStart = cmdLineUtf8.find_last_of(" \t", slnPos);
+                if (pathStart == std::string::npos) pathStart = 0;
+                else pathStart++;
+                
+                std::string slnPath = cmdLineUtf8.substr(pathStart, slnPos + 4 - pathStart);
+                if (std::filesystem::exists(slnPath))
+                {
+                    AppendLog("[vs] Found solution in command line: " + slnPath);
+                    return slnPath;
+                }
+            }
+        }
+        
+        return "";
+    }
+    
+    // Step 4: 从活动文档路径向上搜索.sln文件（兜底方法）
+    static std::string TryGetSolutionFromActiveDocument(const std::string& activeDocPath)
+    {
+        if (activeDocPath.empty()) return "";
+        
+        AppendLog("[vs] TryGetSolutionFromActiveDocument: searching from " + activeDocPath);
+        
+        std::filesystem::path docPath(activeDocPath);
+        std::filesystem::path currentDir = docPath.parent_path();
+        int depth = 0;
+        const int MAX_DEPTH = 8;
+        
+        while (!currentDir.empty() && depth < MAX_DEPTH)
+        {
+            try
+            {
+                for (const auto& entry : std::filesystem::directory_iterator(currentDir))
+                {
+                    if (entry.is_regular_file() && entry.path().extension() == ".sln")
+                    {
+                        std::string slnPath = entry.path().string();
+                        if (slnPath.find("Dear-ImGui-Tool") == std::string::npos)
+                        {
+                            AppendLog("[vs] Found solution near active document: " + slnPath);
+                            return slnPath;
+                        }
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                AppendLog("[vs] TryGetSolutionFromActiveDocument: Exception: " + std::string(e.what()));
+            }
+            
+            currentDir = currentDir.parent_path();
+            depth++;
+        }
+        
+        AppendLog("[vs] TryGetSolutionFromActiveDocument: No solution found");
+        return "";
     }
 
     static void TryFillFromActiveDocument(IDispatch* pDisp, DWORD pid, std::vector<VSInstance>& found, std::string& slnOut)
@@ -1197,32 +1530,117 @@ namespace VSInspector
 
     static void ProcessDteMoniker(IRunningObjectTable* pRot, IMoniker* pMoniker, std::vector<VSInstance>& found, DWORD pidHint)
     {
-        IUnknown* pUnk = NULL; HRESULT hrGetObj = pRot->GetObject(pMoniker, &pUnk);
-        if (FAILED(hrGetObj) || !pUnk) { AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj)); return; }
-        IDispatch* pDisp = NULL; HRESULT hrQI = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
-        if (FAILED(hrQI) || !pDisp) { AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI)); pUnk->Release(); return; }
+        // 参考C#代码的实现方式
+        IUnknown* pUnk = NULL; 
+        HRESULT hrGetObj = pRot->GetObject(pMoniker, &pUnk);
+        if (FAILED(hrGetObj) || !pUnk) 
+        { 
+            AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj)); 
+            return; 
+        }
+        
+        // 直接尝试获取DTE接口，就像C#代码中的 (DTE)comObject
+        IDispatch* pDisp = NULL; 
+        HRESULT hrQI = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
+        if (FAILED(hrQI) || !pDisp) 
+        { 
+            AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI)); 
+            pUnk->Release(); 
+            return; 
+        }
 
+        // 获取进程ID
         DWORD pid = 0; 
-        if (!GetPidFromDTE(pDisp, pid) || pid == 0) {
-            if (pidHint != 0) {
+        if (!GetPidFromDTE(pDisp, pid) || pid == 0) 
+        {
+            if (pidHint != 0) 
+            {
                 pid = pidHint;
                 AppendLog(std::string("[vs] Using pidHint from ROT: ") + std::to_string((unsigned long)pid));
-            } else {
-                AppendLog("[vs] GetPidFromDTE failed and no pidHint"); pDisp->Release(); pUnk->Release(); return;
+            } 
+            else 
+            {
+                AppendLog("[vs] GetPidFromDTE failed and no pidHint"); 
+                pDisp->Release(); 
+                pUnk->Release(); 
+                return;
             }
         }
-        std::string sln; bool gotSln = TryGetSolutionFullName(pDisp, sln);
+        
+        // 直接获取Solution.FullName，就像C#代码中的 dte.Solution.FullName
+        std::string sln; 
+        bool gotSln = TryGetSolutionFullName(pDisp, sln);
         AppendLog(std::string("[vs] TryGetSolutionFullName result=") + (gotSln?"true":"false") + std::string(" sln=") + (sln.empty()?"<empty>":sln));
-        if (sln.empty()) { TryFillFromActiveDocument(pDisp, pid, found, sln); }
+        
+        // 如果COM方法成功，直接使用结果
         if (!sln.empty())
         {
-            for (auto& inst : found) { if (inst.pid == pid) { inst.solutionPath = sln; AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath")); } }
+            for (auto& inst : found) 
+            { 
+                if (inst.pid == pid) 
+                { 
+                    inst.solutionPath = sln; 
+                    AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via COM: ") + sln); 
+                } 
+            }
         }
         else
         {
-            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" no solution resolved"));
+            // COM接口失败，尝试备用方法
+            AppendLog("[vs] COM interface failed, trying alternative methods for pid=" + std::to_string((unsigned long)pid));
+            
+            // Step 2: 尝试进程文件句柄枚举
+            std::string handlePath = TryGetSolutionFromProcessHandles(pid);
+            if (!handlePath.empty())
+            {
+                sln = handlePath;
+                AppendLog("[vs] Found solution via process handles: " + sln);
+            }
+            else
+            {
+                // Step 3: 尝试命令行解析
+                std::string cmdLinePath = TryGetSolutionFromCommandLine(pid);
+                if (!cmdLinePath.empty())
+                {
+                    sln = cmdLinePath;
+                    AppendLog("[vs] Found solution via command line: " + sln);
+                }
+                else
+                {
+                    // Step 4: 从活动文档路径向上搜索
+                    TryFillFromActiveDocument(pDisp, pid, found, sln);
+                    if (!sln.empty())
+                    {
+                        std::string docPath = TryGetSolutionFromActiveDocument(sln);
+                        if (!docPath.empty())
+                        {
+                            sln = docPath;
+                            AppendLog("[vs] Found solution via active document search: " + sln);
+                        }
+                    }
+                }
+            }
+            
+            // 设置备用方法找到的结果
+            if (!sln.empty())
+            {
+                for (auto& inst : found) 
+                { 
+                    if (inst.pid == pid) 
+                    { 
+                        inst.solutionPath = sln; 
+                        AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via backup method: ") + sln); 
+                    } 
+                }
+            }
+            else
+            {
+                AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" no solution resolved - VS may be in Open Folder mode"));
+            }
         }
-        pDisp->Release(); pUnk->Release();
+        
+        pDisp->Release(); 
+        pUnk->Release();
     }
 
     void Refresh()
@@ -1352,11 +1770,14 @@ namespace VSInspector
             return TRUE;
         }, reinterpret_cast<LPARAM>(&pidToTitle));
 
+        AppendLog(std::string("[vs] Found ") + std::to_string(found.size()) + " VS processes before ROT processing");
         for (auto& inst : found)
         {
             auto it = pidToTitle.find(inst.pid);
             if (it != pidToTitle.end()) inst.windowTitle = it->second;
-            AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)inst.pid) + std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle));
+            AppendLog(std::string("[vs] VS process: pid=") + std::to_string((unsigned long)inst.pid) + 
+                     std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle) +
+                     std::string(" solutionPath=") + (inst.solutionPath.empty()?"<none>":inst.solutionPath));
         }
 
 
@@ -1543,54 +1964,121 @@ namespace VSInspector
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         bool didCoInit = SUCCEEDED(hr);
         AppendLog(std::string("[vs] CoInitializeEx hr=") + std::to_string((long)hr) + std::string(" didCoInit=") + (didCoInit?"true":"false"));
+        
+        // 检查当前进程权限
+        HANDLE hToken;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+        {
+            TOKEN_ELEVATION elevation;
+            DWORD size = sizeof(TOKEN_ELEVATION);
+            if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size))
+            {
+                AppendLog(std::string("[vs] Current process elevation: ") + (elevation.TokenIsElevated ? "Elevated" : "Not Elevated"));
+            }
+            CloseHandle(hToken);
+        }
+        
         static bool comSecurityInitialized = false;
         if (didCoInit && !comSecurityInitialized)
         {
+            // 设置更宽松的COM安全级别以访问ROT
             HRESULT hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
-                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+                RPC_C_AUTHN_LEVEL_NONE, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
             AppendLog(std::string("[vs] CoInitializeSecurity hr=") + std::to_string((long)hrSec));
-            if (SUCCEEDED(hrSec)) comSecurityInitialized = true;
+            if (SUCCEEDED(hrSec)) 
+            {
+                comSecurityInitialized = true;
+                AppendLog("[vs] COM security initialized with RPC_C_AUTHN_LEVEL_NONE");
+            }
+            else
+            {
+                // 如果失败，尝试更宽松的设置
+                hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
+                    RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_IMP_LEVEL_IDENTIFY, NULL, EOAC_NONE, NULL);
+                AppendLog(std::string("[vs] CoInitializeSecurity retry hr=") + std::to_string((long)hrSec));
+                if (SUCCEEDED(hrSec)) 
+                {
+                    comSecurityInitialized = true;
+                    AppendLog("[vs] COM security initialized with fallback settings");
+                }
+            }
         }
         IRunningObjectTable* pRot = NULL;
         IEnumMoniker* pEnum = NULL;
-        if (SUCCEEDED(GetRunningObjectTable(0, &pRot)) && pRot)
+        HRESULT hrRot = GetRunningObjectTable(0, &pRot);
+        AppendLog(std::string("[vs] GetRunningObjectTable hr=") + std::to_string((long)hrRot));
+        if (SUCCEEDED(hrRot) && pRot)
         {
-            AppendLog("[vs] Got ROT");
-            if (SUCCEEDED(pRot->EnumRunning(&pEnum)) && pEnum)
+            // 获取枚举器
+            HRESULT hrEnum = pRot->EnumRunning(&pEnum);
+            AppendLog(std::string("[vs] EnumRunning hr=") + std::to_string((long)hrEnum));
+            
+            if (SUCCEEDED(hrEnum) && pEnum)
             {
-                AppendLog("[vs] EnumRunning success");
-                IMoniker* pMoniker = NULL;
-                IBindCtx* pBindCtx = NULL;
-                CreateBindCtx(0, &pBindCtx);
-                while (pEnum->Next(1, &pMoniker, NULL) == S_OK)
-                {
-                    LPOLESTR displayName = NULL;
-                    if (pBindCtx && SUCCEEDED(pMoniker->GetDisplayName(pBindCtx, NULL, &displayName)) && displayName)
-                    {
-                        std::wstring dn(displayName);
-                        if (dn.find(L"!VisualStudio.DTE") == 0)
-                        {
-                            AppendLog(std::string("[vs] ROT item: ") + WideToUtf8(dn));
-                            DWORD pidHint = 0; (void)ParsePidFromRotName(dn, pidHint);
-                            if (pidHint != 0) AppendLog(std::string("[vs] pidHint from ROT=") + std::to_string((unsigned long)pidHint));
-                            AppendLog("[vs] ProcessDteMoniker: begin");
-                            // Use flattened helper to avoid deep nesting
-                            ProcessDteMoniker(pRot, pMoniker, found, pidHint);
-                            AppendLog(std::string("[vs] ProcessDteMoniker: end; instances now=") + std::to_string((int)found.size()));
-                            if (displayName) CoTaskMemFree(displayName);
-                            if (pMoniker) pMoniker->Release();
-                            continue;
-                        }
-                    }
-                    if (displayName) CoTaskMemFree(displayName);
-                    if (pMoniker) pMoniker->Release();
-                }
-                if (pBindCtx) pBindCtx->Release();
-                pEnum->Release();
+                ULONG fetched = 0;
+                int count = 0;
+                CComPtr<IMoniker> spMoniker;
+        
+                                 // 枚举所有 moniker，处理DTE对象
+                 while (pEnum->Next(1, &spMoniker, &fetched) == S_OK)
+                 {
+                     CComPtr<IBindCtx> spCtx;
+                     CreateBindCtx(0, &spCtx);
+         
+                     LPOLESTR displayName = nullptr;
+                     if (SUCCEEDED(spMoniker->GetDisplayName(spCtx, nullptr, &displayName)))
+                     {
+                         std::wstring ws(displayName);
+                         std::string s(ws.begin(), ws.end());
+                         AppendLog("[vs] ROT entry: " + s);
+                         
+                         // 检查是否是Visual Studio DTE对象
+                         if (s.find("!VisualStudio.DTE") != std::string::npos)
+                         {
+                             AppendLog("[vs] Found Visual Studio DTE object: " + s);
+                             
+                             // 解析PID
+                             DWORD pidHint = 0;
+                             ParsePidFromRotName(ws, pidHint);
+                             AppendLog("[vs] Parsed PID hint: " + std::to_string((unsigned long)pidHint));
+                             
+                             // 处理DTE moniker
+                             ProcessDteMoniker(pRot, spMoniker, found, pidHint);
+                         }
+                         
+                         CoTaskMemFree(displayName);
+                     }
+         
+                     spMoniker.Release();
+                     count++;
+                 }
+        
+                AppendLog("[vs] Total ROT entries enumerated: " + std::to_string(count));
             }
-            pRot->Release();
+            else
+            {
+                AppendLog("[vs] EnumRunning failed");
+            }
         }
-        if (didCoInit) CoUninitialize();
+        else
+        {
+            AppendLog("[vs] GetRunningObjectTable failed");
+        }
+        
+        // 正确释放 COM 对象
+        if (pEnum)
+        {
+            pEnum->Release();
+            pEnum = NULL;
+        }
+        if (pRot)
+        {
+            pRot->Release();
+            pRot = NULL;
+        }
+        
+        // 只使用COM接口获取solution路径，不使用备用方法
+        AppendLog("[vs] Solution detection completed - only COM interface used");
 
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
@@ -1945,11 +2433,34 @@ namespace VSInspector
                 if (!inst.solutionPath.empty())
                 {
                     ImGui::TextWrapped("[Path] %s", inst.solutionPath.c_str());
-                    bool checked = (g_selectedSlnPath == inst.solutionPath);
-                    std::string chkId = std::string("[Use this solution]##") + std::to_string((unsigned long)inst.pid);
-                    if (ImGui::Checkbox(chkId.c_str(), &checked))
+                }
+                else
+                {
+                    ImGui::TextWrapped("[Path] <no solution detected>");
+                }
+                
+                // 总是显示选择框，即使没有solutionPath
+                std::string pathKey = inst.solutionPath.empty() ? std::string("pid_") + std::to_string((unsigned long)inst.pid) : inst.solutionPath;
+                bool checked = (g_selectedSlnPaths.find(pathKey) != g_selectedSlnPaths.end());
+                std::string chkId = std::string("[Use this solution]##") + std::to_string((unsigned long)inst.pid);
+                if (ImGui::Checkbox(chkId.c_str(), &checked))
+                {
+                    if (checked)
                     {
-                        g_selectedSlnPath = checked ? inst.solutionPath : std::string();
+                        g_selectedSlnPaths.insert(pathKey);
+                        // 保持向后兼容，设置第一个选中的作为主要选择
+                        if (g_selectedSlnPath.empty())
+                            g_selectedSlnPath = inst.solutionPath.empty() ? pathKey : inst.solutionPath;
+                    }
+                    else
+                    {
+                        g_selectedSlnPaths.erase(pathKey);
+                        // 如果删除的是主要选择，选择下一个
+                        std::string mainKey = g_selectedSlnPath;
+                        if (mainKey == pathKey)
+                        {
+                            g_selectedSlnPath = g_selectedSlnPaths.empty() ? std::string() : *g_selectedSlnPaths.begin();
+                        }
                     }
                 }
                 ImGui::EndGroup();
@@ -2686,4 +3197,5 @@ namespace VSInspector
     }
 #endif
 }
+
 

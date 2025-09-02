@@ -1,0 +1,26 @@
+---
+alwaysApply: true
+description: Code modification workflow - compile only, no execution
+---
+
+# Code Modification Workflow
+
+## Compilation Only Policy
+- After making code changes, **ONLY compile the project**
+- **DO NOT run the executable** - the user will run it manually
+- Use `.\build-only.bat` to compile the project (NOT `.\build.bat` which auto-runs)
+- Wait for compilation to complete successfully
+- Do not use `run_terminal_cmd` to execute the built executable
+
+## Workflow Steps
+1. Make code changes using appropriate tools (search_replace, MultiEdit, etc.)
+2. Check for linter errors with `read_lints`
+3. Compile the project with `.\build-only.bat`
+4. Confirm successful compilation
+5. **Stop here** - let the user run the program manually
+
+## Exception
+- Only run the executable if explicitly requested by the user
+- Always ask for confirmation before running any executable
+
+This ensures the user maintains full control over when and how the program is executed.

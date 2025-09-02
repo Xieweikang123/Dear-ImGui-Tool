@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.16)
+project(test_rot)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Windows 特定配置
+if(WIN32)
+    add_compile_definitions(UNICODE _UNICODE)
+endif()
+
+# 创建可执行文件
+add_executable(test_rot ../test_rot.cpp)
+
+# 编译器选项
+if(MSVC)
+    target_compile_options(test_rot PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(test_rot PRIVATE -Wall -Wextra)
+endif()
+
+# Windows 系统库链接
+if(WIN32)
+    target_link_libraries(test_rot 
+        ole32.lib 
+        oleaut32.lib
+        kernel32.lib
+        user32.lib
+    )
+endif()
