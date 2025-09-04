@@ -1,0 +1,79 @@
+# 弹幕功能开发经验教训
+
+## 核心问题：Windows分层窗口透明度设置
+
+### 关键经验
+1. **窗口完全透明（alpha=0）会导致绘制内容不可见**
+   - `SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)` 会让所有绘制内容消失
+   - 必须设置 `alpha > 0` 才能看到绘制的内容
+
+2. **正确的透明度设置**
+   ```cpp
+   // 错误：完全透明，看不到内容
+   SetLayeredWindowAttributes(g_danmakuHwnd, 0, 0, LWA_ALPHA);
+   
+   // 正确：轻微透明，内容可见
+   SetLayeredWindowAttributes(g_danmakuHwnd, 0, 50, LWA_ALPHA);
+   ```
+
+### 弹幕绘制最佳实践
+1. **窗口设置**
+   - 使用 `WS_EX_LAYERED` 样式
+   - 设置 `alpha=50` 确保内容可见
+   - 窗口背景透明，但绘制内容不透明
+
+2. **弹幕背景绘制**
+   ```cpp
+   // 每个弹幕使用半透明黑色背景
+   HBRUSH semiTransparentBrush = CreateSolidBrush(RGB(0, 0, 0));
+   FillRect(hdc, &bgRect, semiTransparentBrush);
+   DeleteObject(semiTransparentBrush);
+   
+   // 白色边框
+   HPEN whitePen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+   Rectangle(hdc, bgRect.left, bgRect.top, bgRect.right, bgRect.bottom);
+   
+   // 红色文字
+   SetTextColor(hdc, RGB(255, 0, 0));
+   ```
+
+### 位置计算注意事项
+1. **弹幕窗口大小与位置**
+   - 窗口大小：400x300
+   - 弹幕初始位置：350.0f（从右侧开始）
+   - 弹幕间隔：50像素避免重叠
+
+2. **避免文字截断**
+   - 确保弹幕位置在窗口范围内
+   - 考虑文字长度和背景矩形大小
+
+### 调试技巧
+1. **添加详细日志**
+   ```cpp
+   AppendLog("[弹幕] 窗口创建: 样式=" + std::to_string(style));
+   AppendLog("[弹幕] 添加弹幕: 位置=(" + std::to_string(x) + ", " + std::to_string(y) + ")");
+   ```
+
+2. **测试方法**
+   - 先创建简单弹窗确认基本功能
+   - 逐步添加复杂功能
+   - 每次修改后立即测试
+
+### 常见错误模式
+1. **反复修改透明度设置** - 浪费时间
+2. **忽略窗口大小限制** - 导致文字截断
+3. **不测试就继续修改** - 问题累积
+
+### 成功模式
+1. **一次只改一个参数**
+2. **编译后立即测试**
+3. **保持窗口轻微透明（alpha=50）**
+4. **每个弹幕有独立背景和边框**
+
+## 相关文件
+- [src/word_reminder.cpp](mdc:src/word_reminder.cpp) - 弹幕功能实现
+- [src/word_reminder.h](mdc:src/word_reminder.h) - 弹幕数据结构定义
+description:
+globs:
+alwaysApply: true
+---
