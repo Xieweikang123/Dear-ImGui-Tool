@@ -1575,7 +1575,7 @@ namespace WordReminder
                 }
                 
                 // 设置定时器用于动画更新
-                SetTimer(hwnd, 1, 16, nullptr); // 约60FPS
+                SetTimer(hwnd, 1, 33, nullptr); // 约30FPS，减少闪烁
                 AppendLog("[弹幕] 窗口创建完成，定时器已设置");
                 return 0;
             }
@@ -1584,16 +1584,15 @@ namespace WordReminder
                 if (wParam == 1)
                 {
                     // 更新弹幕动画
-                    g_danmakuTimer += 0.016f; // 约16ms
+                    g_danmakuTimer += 0.033f; // 约33ms
                     
-                    // 调试：每100帧输出一次弹幕状态
+                    // 调试：每500帧输出一次弹幕状态（减少日志频率）
                     static int frameCount = 0;
                     frameCount++;
-                    if (frameCount % 100 == 0)
+                    if (frameCount % 500 == 0)
                     {
                         AppendLog("[弹幕动画] 弹幕数量=" + std::to_string(g_danmakuWords.size()) + 
-                                 ", 计时器=" + std::to_string(g_danmakuTimer) + 
-                                 ", 第一个弹幕位置=" + (g_danmakuWords.empty() ? "无" : std::to_string(g_danmakuPositions[0])));
+                                 ", 计时器=" + std::to_string(g_danmakuTimer));
                     }
                     
                     // 更新每个弹幕的位置
@@ -1662,59 +1661,76 @@ namespace WordReminder
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hwnd, &ps);
                 
-                // 调试：每100次绘制输出一次状态
+                // 调试：每1000次绘制输出一次状态（大幅减少日志频率）
                 static int paintCount = 0;
                 paintCount++;
-                if (paintCount % 100 == 0)
+                if (paintCount % 1000 == 0)
                 {
                     AppendLog("[弹幕绘制] 绘制次数: " + std::to_string(paintCount) + 
                              ", 弹幕数量: " + std::to_string(g_danmakuWords.size()));
                 }
                 
-                // 如果没有弹幕内容，显示一些默认的红色单词
+                // 创建双缓冲绘制，减少闪烁
+                RECT clientRect;
+                GetClientRect(hwnd, &clientRect);
+                int width = clientRect.right - clientRect.left;
+                int height = clientRect.bottom - clientRect.top;
+                
+                HDC memDC = CreateCompatibleDC(hdc);
+                HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
+                HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+                
+                // 在内存DC上绘制
                 if (g_danmakuWords.empty())
                 {
                     AppendLog("[弹幕绘制] 弹幕列表为空，显示默认测试单词");
                     
                     // 设置字体
-                    if (g_danmakuFont) SelectObject(hdc, g_danmakuFont);
+                    if (g_danmakuFont) SelectObject(memDC, g_danmakuFont);
                     
                     // 绘制红色单词
-                    SetBkMode(hdc, TRANSPARENT);
-                    SetTextColor(hdc, RGB(255, 0, 0)); // 红色文字
+                    SetBkMode(memDC, TRANSPARENT);
+                    SetTextColor(memDC, RGB(255, 0, 0)); // 红色文字
                     
                     // 显示一些测试单词
-                    TextOutW(hdc, 50, 50, L"弹幕数据为空", 6);
-                    TextOutW(hdc, 50, 100, L"请检查弹幕初始化", 8);
+                    TextOutW(memDC, 50, 50, L"弹幕数据为空", 6);
+                    TextOutW(memDC, 50, 100, L"请检查弹幕初始化", 8);
                     std::wstring handleText = L"窗口句柄: " + std::to_wstring((long long)g_danmakuHwnd);
-                    TextOutW(hdc, 50, 150, handleText.c_str(), (int)handleText.length());
-                    
-                    EndPaint(hwnd, &ps);
-                    return 0;
+                    TextOutW(memDC, 50, 150, handleText.c_str(), (int)handleText.length());
                 }
-                
-                // 设置黑色背景
-                SetBkMode(hdc, OPAQUE);
-                SetBkColor(hdc, RGB(0, 0, 0));
-                
-                // 绘制每个弹幕
-                for (size_t i = 0; i < g_danmakuWords.size(); ++i)
+                else
                 {
-                    // 计算透明度（淡入效果）
-                    if (g_danmakuOpacities[i] < 1.0f)
+                    // 设置黑色背景
+                    SetBkMode(memDC, OPAQUE);
+                    SetBkColor(memDC, RGB(0, 0, 0));
+                    
+                    // 绘制每个弹幕
+                    for (size_t i = 0; i < g_danmakuWords.size(); ++i)
                     {
-                        g_danmakuOpacities[i] += 0.05f;
-                        if (g_danmakuOpacities[i] > 1.0f) g_danmakuOpacities[i] = 1.0f;
+                        // 计算透明度（淡入效果）- 减少更新频率
+                        if (g_danmakuOpacities[i] < 1.0f)
+                        {
+                            g_danmakuOpacities[i] += 0.02f; // 减少透明度变化速度
+                            if (g_danmakuOpacities[i] > 1.0f) g_danmakuOpacities[i] = 1.0f;
+                        }
+                        
+                        // 设置字体
+                        if (g_danmakuFont) SelectObject(memDC, g_danmakuFont);
+                        
+                        // 绘制文本
+                        SetTextColor(memDC, RGB(255, 255, 255)); // 白色文字
+                        TextOutW(memDC, (int)g_danmakuPositions[i], (int)g_danmakuYPositions[i], 
+                                 g_danmakuWords[i].c_str(), (int)g_danmakuWords[i].length());
                     }
-                    
-                    // 设置字体
-                    if (g_danmakuFont) SelectObject(hdc, g_danmakuFont);
-                    
-                    // 绘制文本
-                    SetTextColor(hdc, RGB(255, 255, 255)); // 白色文字
-                    TextOutW(hdc, (int)g_danmakuPositions[i], (int)g_danmakuYPositions[i], 
-                             g_danmakuWords[i].c_str(), (int)g_danmakuWords[i].length());
                 }
+                
+                // 将内存DC的内容复制到屏幕
+                BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
+                
+                // 清理资源
+                SelectObject(memDC, oldBitmap);
+                DeleteObject(memBitmap);
+                DeleteDC(memDC);
                 
                 EndPaint(hwnd, &ps);
                 return 0;
