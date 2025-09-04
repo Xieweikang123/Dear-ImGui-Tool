@@ -1,79 +1,103 @@
-# 弹幕功能开发经验教训
+# 弹幕开发经验教训
 
-## 核心问题：Windows分层窗口透明度设置
+## 核心技术要点
 
-### 关键经验
-1. **窗口完全透明（alpha=0）会导致绘制内容不可见**
-   - `SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)` 会让所有绘制内容消失
-   - 必须设置 `alpha > 0` 才能看到绘制的内容
-
-2. **正确的透明度设置**
-   ```cpp
-   // 错误：完全透明，看不到内容
-   SetLayeredWindowAttributes(g_danmakuHwnd, 0, 0, LWA_ALPHA);
-   
-   // 正确：轻微透明，内容可见
-   SetLayeredWindowAttributes(g_danmakuHwnd, 0, 50, LWA_ALPHA);
-   ```
+### Windows 分层窗口透明度
+- **关键发现**: 使用 `LWA_COLORKEY` 可以实现精确的颜色透明
+- **实现方式**: `SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 255, LWA_COLORKEY)`
+- **效果**: 指定颜色（如黑色）变为透明，其他颜色保持不透明
+- **优势**: 比 `LWA_ALPHA` 更精确，可以保持文字清晰度
 
 ### 弹幕绘制最佳实践
-1. **窗口设置**
-   - 使用 `WS_EX_LAYERED` 样式
-   - 设置 `alpha=50` 确保内容可见
-   - 窗口背景透明，但绘制内容不透明
+- **背景处理**: 使用 `SetBkMode(hdc, OPAQUE)` 和 `SetBkColor(hdc, RGB(0,0,0))` 设置黑色背景
+- **文字颜色**: 白色文字 `RGB(255,255,255)` 在黑色背景上对比度最佳
+- **字体设置**: 使用 `CreateFontW` 创建合适的字体，确保文字清晰可见
+- **位置计算**: 考虑窗口大小，避免文字超出边界
 
-2. **弹幕背景绘制**
-   ```cpp
-   // 每个弹幕使用半透明黑色背景
-   HBRUSH semiTransparentBrush = CreateSolidBrush(RGB(0, 0, 0));
-   FillRect(hdc, &bgRect, semiTransparentBrush);
-   DeleteObject(semiTransparentBrush);
-   
-   // 白色边框
-   HPEN whitePen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-   Rectangle(hdc, bgRect.left, bgRect.top, bgRect.right, bgRect.bottom);
-   
-   // 红色文字
-   SetTextColor(hdc, RGB(255, 0, 0));
-   ```
+### 窗口创建和配置
+- **窗口样式**: `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED`
+- **背景设置**: `wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH)`
+- **尺寸控制**: 300x200 像素适合弹幕显示，不影响其他应用操作
+- **位置定位**: 屏幕右上角，距离边缘 20 像素
 
-### 位置计算注意事项
-1. **弹幕窗口大小与位置**
-   - 窗口大小：400x300
-   - 弹幕初始位置：350.0f（从右侧开始）
-   - 弹幕间隔：50像素避免重叠
+## 常见错误模式
 
-2. **避免文字截断**
-   - 确保弹幕位置在窗口范围内
-   - 考虑文字长度和背景矩形大小
+### ❌ 错误做法
+1. **过度透明**: `SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)` 导致完全透明
+2. **混合透明度**: 窗口透明 + 文字透明 = 完全看不见
+3. **复杂背景**: 绘制背景矩形 + 边框，增加复杂性
+4. **高频日志**: 在 `WM_PAINT` 循环中添加日志导致闪烁
+5. **位置错误**: 弹幕位置超出窗口边界导致截断
 
-### 调试技巧
-1. **添加详细日志**
-   ```cpp
-   AppendLog("[弹幕] 窗口创建: 样式=" + std::to_string(style));
-   AppendLog("[弹幕] 添加弹幕: 位置=(" + std::to_string(x) + ", " + std::to_string(y) + ")");
-   ```
+### ✅ 正确做法
+1. **精确透明**: 使用 `LWA_COLORKEY` 只让背景透明
+2. **简单绘制**: 直接绘制白色文字，不添加复杂背景
+3. **合理尺寸**: 300x200 像素窗口，弹幕从 250px 开始
+4. **调试分离**: 日志放在初始化阶段，不在绘制循环中
+5. **边界检查**: 确保弹幕位置在窗口范围内
 
-2. **测试方法**
-   - 先创建简单弹窗确认基本功能
-   - 逐步添加复杂功能
-   - 每次修改后立即测试
+## 调试技巧
 
-### 常见错误模式
-1. **反复修改透明度设置** - 浪费时间
-2. **忽略窗口大小限制** - 导致文字截断
-3. **不测试就继续修改** - 问题累积
+### 日志记录要点
+```cpp
+// 窗口创建阶段
+AppendLog("[弹幕] 创建窗口: 样式=" + std::to_string(style));
+AppendLog("[弹幕] 窗口创建成功，句柄: " + std::to_string((long long)hwnd));
 
-### 成功模式
-1. **一次只改一个参数**
-2. **编译后立即测试**
-3. **保持窗口轻微透明（alpha=50）**
-4. **每个弹幕有独立背景和边框**
+// 弹幕添加阶段  
+AppendLog("[弹幕] 添加弹幕 " + std::to_string(i) + ": " + word.word);
+
+// 绘制阶段（避免在循环中）
+AppendLog("[弹幕绘制] 开始绘制弹幕，数量: " + std::to_string(count));
+```
+
+### 问题定位方法
+1. **逐步验证**: 一次只改一个参数，立即测试
+2. **状态检查**: 验证窗口句柄、弹幕数据、绘制函数调用
+3. **视觉反馈**: 使用不同颜色和位置快速识别问题
+4. **边界测试**: 测试空数据、单条数据、多条数据的情况
+
+## 性能优化
+
+### 动画优化
+- **定时器频率**: 60 FPS (16ms 间隔) 足够流畅
+- **内存管理**: 及时清理 GDI 对象，避免内存泄漏
+- **重绘策略**: 只在必要时调用 `InvalidateRect`
+- **数据管理**: 使用 vector 存储弹幕数据，动态添加/删除
+
+### 资源管理
+```cpp
+// 创建时
+g_danmakuFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"微软雅黑");
+
+// 销毁时
+if (g_danmakuFont) { DeleteObject(g_danmakuFont); g_danmakuFont = nullptr; }
+```
+
+## 用户体验设计
+
+### 弹幕内容
+- **测试数据**: 使用有意义的单词（Beautiful, Wonderful, Excellent）
+- **格式**: "单词 - 含义" 格式，便于学习
+- **数量**: 同时显示 3-5 条弹幕，避免屏幕混乱
+- **速度**: 2-4 像素/帧的移动速度，便于阅读
+
+### 交互设计
+- **非侵入性**: 透明背景，不遮挡其他应用
+- **位置固定**: 屏幕右上角，不影响主要工作区域
+- **自动管理**: 弹幕自动添加、移动、消失
+- **事件穿透**: 忽略鼠标和键盘事件，不影响其他应用
 
 ## 相关文件
-- [src/word_reminder.cpp](mdc:src/word_reminder.cpp) - 弹幕功能实现
-- [src/word_reminder.h](mdc:src/word_reminder.h) - 弹幕数据结构定义
-description:
-globs:
-alwaysApply: true
----
+- [src/word_reminder.cpp](mdc:src/word_reminder.cpp) - 主要实现文件
+- [main.cpp](mdc:main.cpp) - 应用程序入口
+- [build-only.bat](mdc:build-only.bat) - 编译脚本
+
+## 开发流程建议
+1. **先实现基本功能**: 窗口创建、文字显示
+2. **再优化视觉效果**: 透明度、颜色、位置
+3. **最后添加动画**: 移动、淡入淡出效果
+4. **持续测试验证**: 每次修改后立即编译运行
+5. **记录经验教训**: 避免重复踩坑

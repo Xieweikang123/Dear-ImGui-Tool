@@ -16,6 +16,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <windowsx.h>
 #include <shellscalingapi.h>
 #include <dwmapi.h>
 #include <commdlg.h>
@@ -375,27 +376,8 @@ namespace WordReminder
         }
         
 #ifdef _WIN32
-        // 测试弹幕功能 - 启动时自动创建测试弹幕
-        g_state->enableDanmaku = true; // 自动启用弹幕
-        
-        // 延迟2秒后启动测试弹幕，确保窗口系统已初始化
-        std::thread([]() {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            AppendLog("[弹幕测试] 启动测试弹幕");
-            
-            // 创建一个简单的测试弹窗
-            MessageBoxW(nullptr, L"这是一个测试弹窗！\n如果你能看到这个弹窗，说明窗口创建功能正常。", 
-                        L"弹幕测试", MB_OK | MB_ICONINFORMATION);
-            AppendLog("[弹幕测试] 测试弹窗已显示");
-            
-            // 创建测试弹幕窗口
-            CreateDanmakuWindow();
-            
-            // 使用StartDanmakuReminder来创建测试弹幕
-            StartDanmakuReminder();
-            
-            AppendLog("[弹幕测试] 测试弹幕启动完成");
-        }).detach();
+        // 弹幕功能初始化 - 默认禁用，由用户手动启用
+        g_state->enableDanmaku = false; // 默认不启用弹幕，避免启动时自动弹出
 #endif
     }
 
@@ -1564,6 +1546,11 @@ namespace WordReminder
     // 弹幕窗口过程函数
     static LRESULT CALLBACK DanmakuWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
+        // 拖动相关变量
+        static bool isDragging = false;
+        static POINT dragStart;
+        static POINT windowStart;
+        
         switch (msg)
         {
             case WM_CREATE:
@@ -1627,23 +1614,42 @@ namespace WordReminder
                     }
                     
                     // 添加新的弹幕（每3秒添加一个）
-                    if (g_danmakuTimer > 3.0f && !g_danmakuWords.empty())
+                    if (g_danmakuTimer > 3.0f)
                     {
                         g_danmakuTimer = 0.0f;
                         
-                        // 从待复习的单词中随机选择一个
-                        auto dueWords = GetDueWords();
-                        if (!dueWords.empty())
+                        // 获取窗口客户区大小
+                        RECT clientRect;
+                        GetClientRect(hwnd, &clientRect);
+                        int windowWidth = clientRect.right - clientRect.left;
+                        int windowHeight = clientRect.bottom - clientRect.top;
+                        
+                        // 从单词列表中随机选择一个单词
+                        if (!g_state->words.empty())
                         {
-                            int randomIndex = rand() % dueWords.size();
-                            const auto& word = dueWords[randomIndex];
+                            int randomIndex = rand() % g_state->words.size();
+                            const auto& word = g_state->words[randomIndex];
                             
                             // 添加到弹幕列表
                             g_danmakuWords.push_back(Utf8ToWide(word.word + " - " + word.meaning));
-                            g_danmakuPositions.push_back(250.0f); // 从弹幕窗口右侧开始
-                            g_danmakuYPositions.push_back(30.0f + (rand() % 160)); // 随机Y位置，适应窗口高度
+                            g_danmakuPositions.push_back((float)windowWidth); // 从弹幕窗口右侧开始
+                            g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
                             g_danmakuOpacities.push_back(0.0f); // 初始透明
                             g_danmakuSpeeds.push_back(2.0f + (rand() % 3)); // 随机速度
+                            
+                            AppendLog("[弹幕] 添加单词弹幕: " + word.word + " - " + word.meaning + 
+                                     ", 位置=(" + std::to_string(windowWidth) + ", " + std::to_string(g_danmakuYPositions.back()) + ")");
+                        }
+                        else
+                        {
+                            // 如果单词列表为空，添加提示弹幕
+                            g_danmakuWords.push_back(L"请添加单词到列表中");
+                            g_danmakuPositions.push_back((float)windowWidth);
+                            g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60)));
+                            g_danmakuOpacities.push_back(0.0f);
+                            g_danmakuSpeeds.push_back(2.0f + (rand() % 3));
+                            
+                            AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中");
                         }
                     }
                     
@@ -1678,10 +1684,10 @@ namespace WordReminder
                     SetTextColor(hdc, RGB(255, 0, 0)); // 红色文字
                     
                     // 显示一些测试单词
-                    TextOutW(hdc, 50, 50, L"Hello - 你好", 8);
-                    TextOutW(hdc, 50, 100, L"World - 世界", 8);
-                    TextOutW(hdc, 50, 150, L"Test - 测试", 7);
-                    TextOutW(hdc, 50, 200, L"Danmaku - 弹幕", 10);
+                    TextOutW(hdc, 50, 50, L"弹幕数据为空", 6);
+                    TextOutW(hdc, 50, 100, L"请检查弹幕初始化", 8);
+                    std::wstring handleText = L"窗口句柄: " + std::to_wstring((long long)g_danmakuHwnd);
+                    TextOutW(hdc, 50, 150, handleText.c_str(), (int)handleText.length());
                     
                     EndPaint(hwnd, &ps);
                     return 0;
@@ -1721,11 +1727,61 @@ namespace WordReminder
                 return 0;
             }
             case WM_LBUTTONDOWN:
+            {
+                // 开始拖动窗口
+                isDragging = true;
+                
+                // 获取当前鼠标屏幕坐标
+                POINT mousePos;
+                GetCursorPos(&mousePos);
+                
+                // 获取当前窗口位置
+                RECT windowRect;
+                GetWindowRect(hwnd, &windowRect);
+                
+                // 计算鼠标相对于窗口的偏移
+                dragStart.x = mousePos.x - windowRect.left;
+                dragStart.y = mousePos.y - windowRect.top;
+                
+                // 捕获鼠标
+                SetCapture(hwnd);
+                AppendLog("[弹幕] 开始拖动窗口");
+                return 0;
+            }
+            case WM_MOUSEMOVE:
+            {
+                if (isDragging)
+                {
+                    // 获取当前鼠标屏幕坐标
+                    POINT mousePos;
+                    GetCursorPos(&mousePos);
+                    
+                    // 计算新位置（使用屏幕坐标，避免相对坐标的累积误差）
+                    int newX = mousePos.x - dragStart.x;
+                    int newY = mousePos.y - dragStart.y;
+                    
+                    // 移动窗口（使用SWP_NOACTIVATE避免窗口激活导致的闪烁）
+                    SetWindowPos(hwnd, nullptr, newX, newY, 0, 0, 
+                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                return 0;
+            }
+            case WM_LBUTTONUP:
+            {
+                if (isDragging)
+                {
+                    // 结束拖动
+                    isDragging = false;
+                    ReleaseCapture();
+                    AppendLog("[弹幕] 结束拖动窗口");
+                }
+                return 0;
+            }
             case WM_RBUTTONDOWN:
             case WM_MBUTTONDOWN:
             case WM_KEYDOWN:
             {
-                // 忽略所有鼠标和键盘事件，让它们穿透到下层窗口
+                // 忽略其他鼠标和键盘事件，让它们穿透到下层窗口
                 return 0;
             }
             case WM_SYSCOMMAND:
@@ -1760,8 +1816,8 @@ namespace WordReminder
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         
-        // 创建一个小一点的弹幕窗口，只覆盖屏幕右侧区域
-        int danmakuWidth = 300;  // 弹幕窗口宽度
+        // 创建一个更宽的弹幕窗口，只覆盖屏幕右侧区域
+        int danmakuWidth = 1000;  // 弹幕窗口宽度
         int danmakuHeight = 200; // 弹幕窗口高度
         int danmakuX = screenWidth - danmakuWidth - 20; // 距离右边缘20像素
         int danmakuY = 50; // 距离顶部50像素
@@ -1780,8 +1836,8 @@ namespace WordReminder
 
         if (g_danmakuHwnd)
         {
-            // 设置窗口背景为黑色，不透明
-            SetLayeredWindowAttributes(g_danmakuHwnd, RGB(0, 0, 0), 255, LWA_COLORKEY);
+            // 设置窗口轻微透明，确保内容可见
+            SetLayeredWindowAttributes(g_danmakuHwnd, 0, 200, LWA_ALPHA);
             ShowWindow(g_danmakuHwnd, SW_SHOW);
             UpdateWindow(g_danmakuHwnd);
             
@@ -1831,60 +1887,26 @@ namespace WordReminder
         auto dueWords = GetDueWords();
         bool hasDueWords = !dueWords.empty();
         
-        // 如果没有需要复习的单词，创建测试弹幕
+        // 如果没有需要复习的单词，使用单词列表中的单词
         if (dueWords.empty()) 
         {
-            AppendLog("[弹幕测试] 没有待复习单词，创建测试弹幕");
-            // 创建一些测试单词
-            WordEntry testWord1;
-            testWord1.word = "Beautiful";
-            testWord1.meaning = "美丽的";
-            testWord1.remindTime = std::chrono::system_clock::now();
-            testWord1.lastReview = std::chrono::system_clock::now();
-            testWord1.isActive = true;
-            testWord1.isMastered = false;
-            testWord1.reviewCount = 0;
-            dueWords.push_back(testWord1);
-            
-            WordEntry testWord2;
-            testWord2.word = "Wonderful";
-            testWord2.meaning = "精彩的";
-            testWord2.remindTime = std::chrono::system_clock::now();
-            testWord2.lastReview = std::chrono::system_clock::now();
-            testWord2.isActive = true;
-            testWord2.isMastered = false;
-            testWord2.reviewCount = 0;
-            dueWords.push_back(testWord2);
-            
-            WordEntry testWord3;
-            testWord3.word = "Excellent";
-            testWord3.meaning = "优秀的";
-            testWord3.remindTime = std::chrono::system_clock::now();
-            testWord3.lastReview = std::chrono::system_clock::now();
-            testWord3.isActive = true;
-            testWord3.isMastered = false;
-            testWord3.reviewCount = 0;
-            dueWords.push_back(testWord3);
-            
-            WordEntry testWord4;
-            testWord4.word = "Amazing";
-            testWord4.meaning = "令人惊叹的";
-            testWord4.remindTime = std::chrono::system_clock::now();
-            testWord4.lastReview = std::chrono::system_clock::now();
-            testWord4.isActive = true;
-            testWord4.isMastered = false;
-            testWord4.reviewCount = 0;
-            dueWords.push_back(testWord4);
-            
-            WordEntry testWord5;
-            testWord5.word = "Fantastic";
-            testWord5.meaning = "极好的";
-            testWord5.remindTime = std::chrono::system_clock::now();
-            testWord5.lastReview = std::chrono::system_clock::now();
-            testWord5.isActive = true;
-            testWord5.isMastered = false;
-            testWord5.reviewCount = 0;
-            dueWords.push_back(testWord5);
+            AppendLog("[弹幕测试] 没有待复习单词，使用单词列表中的单词");
+            AppendLog("[弹幕测试] 单词列表大小: " + std::to_string(g_state->words.size()));
+            // 从单词列表中获取单词用于弹幕
+            if (!g_state->words.empty())
+            {
+                // 随机选择3个单词作为初始弹幕
+                for (size_t i = 0; i < std::min(g_state->words.size(), size_t(3)); ++i)
+                {
+                    int randomIndex = rand() % g_state->words.size();
+                    dueWords.push_back(g_state->words[randomIndex]);
+                    AppendLog("[弹幕测试] 添加单词: " + g_state->words[randomIndex].word);
+                }
+            }
+            else
+            {
+                AppendLog("[弹幕测试] 单词列表为空，将显示提示信息");
+            }
         }
         
         // 确保弹幕窗口存在
@@ -1911,20 +1933,29 @@ namespace WordReminder
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         
         // 添加一些初始弹幕
-                        for (size_t i = 0; i < std::min(dueWords.size(), size_t(3)); ++i)
-                {
-                    const auto& word = dueWords[i];
-                    g_danmakuWords.push_back(Utf8ToWide(word.word + " - " + word.meaning));
-                    // 从弹幕窗口右侧开始，适应新的窗口大小
-                    g_danmakuPositions.push_back(250.0f + i * 30.0f); // 从窗口右侧开始，错开位置
-                    g_danmakuYPositions.push_back(30.0f + (rand() % 160)); // 随机Y位置，避免超出窗口
-                    g_danmakuOpacities.push_back(0.0f);
-                    g_danmakuSpeeds.push_back(2.0f + (rand() % 3));
-                    
-                    AppendLog("[弹幕] 添加弹幕 " + std::to_string(i) + ": " + word.word + 
-                             ", 位置=(" + std::to_string(250.0f + i * 30.0f) + 
-                             ", " + std::to_string(g_danmakuYPositions.back()) + ")");
-                }
+        if (g_danmakuHwnd)
+        {
+            // 获取窗口客户区大小
+            RECT clientRect;
+            GetClientRect(g_danmakuHwnd, &clientRect);
+            int windowWidth = clientRect.right - clientRect.left;
+            int windowHeight = clientRect.bottom - clientRect.top;
+            
+            for (size_t i = 0; i < std::min(dueWords.size(), size_t(3)); ++i)
+            {
+                const auto& word = dueWords[i];
+                g_danmakuWords.push_back(Utf8ToWide(word.word + " - " + word.meaning));
+                // 从弹幕窗口右侧开始，适应新的窗口大小
+                g_danmakuPositions.push_back((float)(windowWidth - i * 30.0f)); // 从窗口右侧开始，错开位置
+                g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
+                g_danmakuOpacities.push_back(0.0f);
+                g_danmakuSpeeds.push_back(2.0f + (rand() % 3));
+                
+                AppendLog("[弹幕] 添加弹幕 " + std::to_string(i) + ": " + word.word + 
+                         ", 位置=(" + std::to_string(windowWidth - i * 30.0f) + 
+                         ", " + std::to_string(g_danmakuYPositions.back()) + ")");
+            }
+        }
         
         AppendLog("[弹幕] 屏幕尺寸: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight) + 
                  ", 初始弹幕位置: " + std::to_string((float)(screenWidth - 100)));
@@ -2549,31 +2580,35 @@ namespace WordReminder
 #endif
         }
         
-        // 弹幕提醒检查
+        // 弹幕提醒检查 - 只在需要时创建，避免重复创建
         static auto lastDanmakuCheckTime = std::chrono::steady_clock::now();
+        static bool danmakuInitialized = false;
         auto danmakuNow = std::chrono::steady_clock::now();
         
-        // 每2秒检查一次弹幕提醒
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(danmakuNow - lastDanmakuCheckTime).count() >= 2000)
+        // 每5秒检查一次弹幕提醒，减少检查频率
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(danmakuNow - lastDanmakuCheckTime).count() >= 5000)
         {
-            if (g_state->enableDanmaku)
+            if (g_state->enableDanmaku && !danmakuInitialized)
             {
                 auto dueWords = GetDueWords();
                 AppendLog("[弹幕调试] 检查弹幕: 启用=" + std::to_string(g_state->enableDanmaku) + 
                          ", 待复习单词数=" + std::to_string(dueWords.size()) + 
                          ", 弹幕窗口=" + (g_danmakuHwnd ? "存在" : "不存在"));
                 
-                // 如果弹幕窗口不存在，创建它（即使没有待复习单词也创建测试弹幕）
+                // 只在弹幕窗口不存在且未初始化时创建
                 if (!g_danmakuHwnd)
                 {
                     StartDanmakuReminder();
+                    danmakuInitialized = true;
+                    AppendLog("[弹幕调试] 弹幕窗口已初始化");
                 }
-                // 只有在弹幕功能被禁用时才停止弹幕
             }
-            else
+            else if (!g_state->enableDanmaku && danmakuInitialized)
             {
                 // 如果弹幕功能被禁用，停止弹幕
                 StopDanmakuReminder();
+                danmakuInitialized = false;
+                AppendLog("[弹幕调试] 弹幕功能已禁用");
             }
             
             lastDanmakuCheckTime = danmakuNow;
