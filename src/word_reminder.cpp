@@ -700,6 +700,41 @@ namespace WordReminder
     {
         switch (msg)
         {
+            case WM_GETMINMAXINFO:
+            {
+                // 设置最小窗口大小，避免调整到太小
+                MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+                mmi->ptMinTrackSize.x = 400;
+                mmi->ptMinTrackSize.y = 120;
+                return 0;
+            }
+            case WM_NCHITTEST:
+            {
+                // 自定义非客户区命中测试，提供拖动与缩放热点
+                LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
+                if (hit != HTCLIENT) return hit;
+
+                POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                RECT rc; GetWindowRect(hwnd, &rc);
+
+                const int border = 8; // 边缘宽度
+                bool left   = pt.x <= rc.left + border;
+                bool right  = pt.x >= rc.right - border;
+                bool top    = pt.y <= rc.top + border;
+                bool bottom = pt.y >= rc.bottom - border;
+
+                if (top && left) return HTTOPLEFT;
+                if (top && right) return HTTOPRIGHT;
+                if (bottom && left) return HTBOTTOMLEFT;
+                if (bottom && right) return HTBOTTOMRIGHT;
+                if (left) return HTLEFT;
+                if (right) return HTRIGHT;
+                if (top) return HTTOP;
+                if (bottom) return HTBOTTOM;
+
+                // 其余区域保持为可拖动（标题区效果）
+                return HTCAPTION;
+            }
             case WM_CREATE:
             {
                 // Fonts
@@ -1872,7 +1907,7 @@ namespace WordReminder
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             wc.lpszClassName,
             L"单词弹幕",
-            WS_POPUP,
+            WS_POPUP | WS_THICKFRAME, // 允许调整大小
             danmakuX, danmakuY, danmakuWidth, danmakuHeight,
             nullptr, nullptr, wc.hInstance, nullptr);
             
