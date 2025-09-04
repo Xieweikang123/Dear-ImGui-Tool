@@ -505,6 +505,7 @@ namespace WordReminder
     static HFONT g_danmakuFont = nullptr; // 弹幕字体
     static HBRUSH g_danmakuBrush = nullptr; // 弹幕背景画刷
     static HPEN g_danmakuPen = nullptr; // 弹幕边框画笔
+    static int g_danmakuFontSizePx = 24; // 弹幕字体像素大小（可缩放）
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003, BTN_COPY = 1004 };
 
@@ -527,6 +528,23 @@ namespace WordReminder
         }
         // Fallback: assume 1.0
         return 1.0f;
+    }
+
+    // 根据当前 DPI 和 g_danmakuFontSizePx 重新创建弹幕字体
+    static void RecreateDanmakuFont(HWND hwnd)
+    {
+        if (g_danmakuFont)
+        {
+            DeleteObject(g_danmakuFont);
+            g_danmakuFont = nullptr;
+        }
+        const float s = GetDpiScale(hwnd);
+        int pixelSize = (int)(g_danmakuFontSizePx * s);
+        if (pixelSize < 8) pixelSize = 8;
+        g_danmakuFont = CreateFontW(pixelSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+        AppendLog("[弹幕] 重建字体: sizePx=" + std::to_string(g_danmakuFontSizePx) + ", dpiScale=" + std::to_string((double)s));
     }
 
     static float GetSystemDpiScale()
@@ -1556,13 +1574,7 @@ namespace WordReminder
             case WM_CREATE:
             {
                 // 创建弹幕字体
-                const float s = GetSystemDpiScale();
-                if (!g_danmakuFont)
-                {
-                    g_danmakuFont = CreateFontW((int)(24 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
-                }
+                if (!g_danmakuFont) RecreateDanmakuFont(hwnd);
                 
                 // 创建弹幕背景画刷和边框画笔
                 if (!g_danmakuBrush)
@@ -1573,10 +1585,28 @@ namespace WordReminder
                 {
                     g_danmakuPen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
                 }
+                AppendLog("[弹幕] 初始字体大小=" + std::to_string(g_danmakuFontSizePx));
                 
                 // 设置定时器用于动画更新
                 SetTimer(hwnd, 1, 33, nullptr); // 约30FPS，减少闪烁
                 AppendLog("[弹幕] 窗口创建完成，定时器已设置");
+                return 0;
+            }
+            case WM_MOUSEWHEEL:
+            {
+                // 鼠标滚轮缩放字体大小（Ctrl 不按也可）
+                short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                int step = (delta > 0) ? 2 : -2;
+                int newSize = g_danmakuFontSizePx + step;
+                if (newSize < 10) newSize = 10;
+                if (newSize > 64) newSize = 64;
+                if (newSize != g_danmakuFontSizePx)
+                {
+                    g_danmakuFontSizePx = newSize;
+                    RecreateDanmakuFont(hwnd);
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                    AppendLog("[弹幕] 鼠标滚轮缩放: 新字体大小=" + std::to_string(g_danmakuFontSizePx));
+                }
                 return 0;
             }
             case WM_TIMER:
