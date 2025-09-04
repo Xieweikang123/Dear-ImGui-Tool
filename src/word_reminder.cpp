@@ -62,6 +62,7 @@ namespace WordReminder
         bool playSoundOnReminder = false;
         bool enableDanmaku = false; // 弹幕提醒开关
         int defaultReminderSeconds = 5; // 默认5秒（用于测试）
+        float danmakuIntervalSec = 3.0f; // 弹幕出词间隔（秒）
         
         // 统计
         int totalWords = 0;
@@ -1677,8 +1678,8 @@ namespace WordReminder
                         }
                     }
                     
-                    // 添加新的弹幕（每3秒添加一个）
-                    if (g_danmakuTimer > 3.0f)
+                    // 添加新的弹幕（基于可配置的间隔）
+                    if (g_danmakuTimer > (g_state ? std::max(0.5f, g_state->danmakuIntervalSec) : 3.0f))
                     {
                         g_danmakuTimer = 0.0f;
                         
@@ -2246,6 +2247,18 @@ namespace WordReminder
             ImGui::Checkbox("播放提醒音效", &g_state->playSoundOnReminder);
             ImGui::SameLine();
             ImGui::Checkbox("启用弹幕提醒", &g_state->enableDanmaku);
+            
+            // 弹幕出词频率（间隔秒）
+            ImGui::Spacing();
+            ImGui::Text("弹幕出词间隔(秒):");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(240);
+            float minInterval = 0.5f, maxInterval = 10.0f;
+            if (ImGui::SliderFloat("##DanmakuInterval", &g_state->danmakuIntervalSec, minInterval, maxInterval, "%.1f s"))
+            {
+                g_state->danmakuIntervalSec = std::clamp(g_state->danmakuIntervalSec, minInterval, maxInterval);
+                AppendLog("[弹幕] 更新出词间隔(s)=" + std::to_string(g_state->danmakuIntervalSec));
+            }
             
             if (ImGui::IsItemHovered())
             {
