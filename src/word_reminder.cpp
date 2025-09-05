@@ -1,4 +1,5 @@
 #include "word_reminder.h"
+#include "word_reminder_utils.h"
 #include "imgui.h"
 #include "replace_tool.h"
 #include <string>
@@ -74,180 +75,8 @@ namespace WordReminder
     
     static std::unique_ptr<FeatureState> g_state;
     
-    // 时间格式化函数
-    std::string FormatTime(const std::chrono::system_clock::time_point& time)
-    {
-        auto time_t = std::chrono::system_clock::to_time_t(time);
-        std::tm tm = *std::localtime(&time_t);
-        std::ostringstream oss;
-        oss << std::put_time(&tm, "%H:%M:%S");
-        return oss.str();
-    }
     
-    // 计算距离现在的时间
-    std::string TimeUntilNow(const std::chrono::system_clock::time_point& time)
-    {
-        auto now = std::chrono::system_clock::now();
-        auto diff = std::chrono::duration_cast<std::chrono::seconds>(time - now);
-        
-        if (diff.count() < 0)
-        {
-            return "已过期 " + std::to_string(-diff.count()) + " 秒";
-        }
-        else if (diff.count() < 60)
-        {
-            return std::to_string(diff.count()) + " 秒后";
-        }
-        else if (diff.count() < 3600)
-        {
-            auto minutes = diff.count() / 60;
-            auto seconds = diff.count() % 60;
-            return std::to_string(minutes) + " 分 " + std::to_string(seconds) + " 秒后";
-        }
-        else
-        {
-            auto hours = diff.count() / 3600;
-            auto minutes = (diff.count() % 3600) / 60;
-            auto seconds = diff.count() % 60;
-            return std::to_string(hours) + " 小时 " + std::to_string(minutes) + " 分 " + std::to_string(seconds) + " 秒后";
-        }
-    }
-    
-    // 只读可选择文本（单行），外观尽量接近普通文本
-    static void DrawCopyableText(const char* id, const std::string& text)
-    {
-        std::vector<char> buf(text.begin(), text.end());
-        buf.push_back('\0');
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-        ImGui::InputText(id, buf.data(), (size_t)buf.size(), ImGuiInputTextFlags_ReadOnly);
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleVar();
-    }
 
-    // 只读可选择文本（多行自动换行），外观尽量接近普通文本
-    static void DrawCopyableMultiline(const char* id, const std::string& text)
-    {
-        std::vector<char> buf(text.begin(), text.end());
-        buf.push_back('\0');
-        // 计算与 TextWrapped 近似的高度
-        float wrapWidth = ImGui::GetContentRegionAvail().x;
-        if (wrapWidth <= 0.0f) wrapWidth = 400.0f;
-        ImVec2 measured = ImGui::CalcTextSize(text.c_str(), nullptr, true, wrapWidth);
-        float lineH = ImGui::GetTextLineHeightWithSpacing();
-        float minH = lineH * 1.4f;
-        float maxH = lineH * 6.0f;
-        float height = measured.y + ImGui::GetStyle().FramePadding.y * 2.0f;
-        height = std::max(minH, std::min(maxH, height));
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-        ImGui::InputTextMultiline(id, buf.data(), (size_t)buf.size(), ImVec2(-1, height),
-                                  ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
-        ImGui::PopStyleColor();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleVar();
-    }
-
-    // 对字段进行转义与反转义，避免分隔符与换行破坏一行一条记录的约定
-    static std::string EscapeField(const std::string& input)
-    {
-        std::string out;
-        out.reserve(input.size());
-        for (char ch : input)
-        {
-            switch (ch)
-            {
-                case '\\': out += "\\\\"; break; // 反斜杠
-                case '|':   out += "\\|";   break; // 竖线分隔符
-                case '\n': out += "\\n";   break; // 换行
-                case '\r': out += "\\r";   break; // 回车
-                default:    out += ch;        break;
-            }
-        }
-        return out;
-    }
-
-    static std::string UnescapeField(const std::string& input)
-    {
-        std::string out;
-        out.reserve(input.size());
-        bool esc = false;
-        for (size_t i = 0; i < input.size(); ++i)
-        {
-            char ch = input[i];
-            if (!esc)
-            {
-                if (ch == '\\')
-                {
-                    esc = true;
-                    continue;
-                }
-                out += ch;
-            }
-            else
-            {
-                switch (ch)
-                {
-                    case 'n': out += '\n'; break;
-                    case 'r': out += '\r'; break;
-                    case '|': out += '|';  break;
-                    case '\\': out += '\\'; break;
-                    default:
-                        // 未知转义，按字面保留
-                        out += ch;
-                        break;
-                }
-                esc = false;
-            }
-        }
-        // 如果末尾是孤立的反斜杠，则保留一个反斜杠
-        if (esc) out += '\\';
-        return out;
-    }
-
-    // 将一行按未被转义的 '|' 进行分割
-    static std::vector<std::string> SplitByUnescapedPipe(const std::string& line)
-    {
-        std::vector<std::string> parts;
-        std::string current;
-        bool esc = false;
-        for (char ch : line)
-        {
-            if (!esc)
-            {
-                if (ch == '\\')
-                {
-                    esc = true;
-                    current.push_back(ch); // 保留反斜杠，供反转义阶段处理
-                }
-                else if (ch == '|')
-                {
-                    parts.push_back(current);
-                    current.clear();
-                }
-                else
-                {
-                    current.push_back(ch);
-                }
-            }
-            else
-            {
-                // 转义后的字符无论是什么都属于当前字段
-                current.push_back(ch);
-                esc = false;
-            }
-        }
-        parts.push_back(current);
-        return parts;
-    }
 
     // 保存单词到文件 (UTF-8)
     void SaveWords()
@@ -260,9 +89,9 @@ namespace WordReminder
             file.write(reinterpret_cast<const char*>(bom), 3);
             for (const auto& entry : g_state->words)
             {
-                file << EscapeField(entry.word) << "|"
-                     << EscapeField(entry.meaning) << "|"
-                     << EscapeField(entry.pronunciation) << "|"
+                file << Utils::EscapeField(entry.word) << "|"
+                     << Utils::EscapeField(entry.meaning) << "|"
+                     << Utils::EscapeField(entry.pronunciation) << "|"
                      << std::chrono::system_clock::to_time_t(entry.remindTime) << "|"
                      << entry.isActive << "|"
                      << entry.isMastered << "|"
@@ -297,7 +126,7 @@ namespace WordReminder
                 buffer += line;
 
                 // 按未被转义的分隔符分割
-                auto parts = SplitByUnescapedPipe(buffer);
+                auto parts = Utils::SplitByUnescapedPipe(buffer);
                 // 旧数据至少包含：word | meaning | pronunciation | remindTime | isActive
                 if (parts.size() < 5)
                 {
@@ -307,9 +136,9 @@ namespace WordReminder
 
                 // 解析一个完整记录
                 WordEntry entry;
-                entry.word = UnescapeField(parts[0]);
-                entry.meaning = UnescapeField(parts[1]);
-                entry.pronunciation = UnescapeField(parts[2]);
+                entry.word = Utils::UnescapeField(parts[0]);
+                entry.meaning = Utils::UnescapeField(parts[1]);
+                entry.pronunciation = Utils::UnescapeField(parts[2]);
 
                 auto to_time = [](const std::string& s) -> time_t {
                     try { return (time_t)std::stoll(s); } catch (...) { return (time_t)std::time(nullptr); }
@@ -427,48 +256,6 @@ namespace WordReminder
     }
 
 #ifdef _WIN32
-    // 将UTF-8转换为宽字符，便于Windows原生API显示中文
-    static std::wstring Utf8ToWide(const std::string& utf8)
-    {
-        if (utf8.empty()) return std::wstring();
-        int wideLength = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-        if (wideLength <= 0) return std::wstring();
-        std::wstring wide(static_cast<size_t>(wideLength), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wide[0], wideLength);
-        if (!wide.empty() && wide.back() == L'\0') wide.pop_back();
-        return wide;
-    }
-
-    // 读取系统是否为暗色主题
-    static bool IsSystemDarkMode()
-    {
-        HKEY key;
-        DWORD value = 1; // 默认浅色
-        DWORD size = sizeof(DWORD);
-        if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                          0, KEY_READ, &key) == ERROR_SUCCESS)
-        {
-            RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr, reinterpret_cast<LPBYTE>(&value), &size);
-            RegCloseKey(key);
-        }
-        return value == 0; // 0 表示暗色
-    }
-
-    // 为窗口应用 DWM 视觉效果（暗色、圆角）
-    static void ApplyDwmWindowAttributes(HWND hwnd, bool useDark)
-    {
-        // 暗色标题栏
-        BOOL dark = useDark ? TRUE : FALSE;
-        const DWORD DWMWA_USE_IMMERSIVE_DARK_MODE = 20u; // 在较新SDK里有定义，这里直接使用常量
-        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-
-        // 圆角
-        const DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33u;
-        enum DwmWindowCornerPreference { DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWCP_ROUND = 2, DWMWCP_ROUNDSMALL = 3 };
-        DwmWindowCornerPreference pref = DWMWCP_ROUND;
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref));
-    }
 
     // 右上角自定义置顶弹窗
     static HWND g_reminderHwnd = nullptr;
@@ -510,26 +297,6 @@ namespace WordReminder
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003, BTN_COPY = 1004 };
 
-#ifdef _WIN32
-    static float GetDpiScale(HWND hwnd)
-    {
-        // Prefer GetDpiForWindow on Win10+
-        HMODULE user32 = LoadLibraryW(L"user32.dll");
-        if (user32)
-        {
-            typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
-            auto pGetDpiForWindow = (GetDpiForWindowFn)GetProcAddress(user32, "GetDpiForWindow");
-            if (pGetDpiForWindow)
-            {
-                UINT dpi = pGetDpiForWindow(hwnd);
-                FreeLibrary(user32);
-                return dpi > 0 ? (float)dpi / 96.0f : 1.0f;
-            }
-            FreeLibrary(user32);
-        }
-        // Fallback: assume 1.0
-        return 1.0f;
-    }
 
     // 根据当前 DPI 和 g_danmakuFontSizePx 重新创建弹幕字体
     static void RecreateDanmakuFont(HWND hwnd)
@@ -539,7 +306,7 @@ namespace WordReminder
             DeleteObject(g_danmakuFont);
             g_danmakuFont = nullptr;
         }
-        const float s = GetDpiScale(hwnd);
+        const float s = Utils::GetDpiScale(hwnd);
         int pixelSize = (int)(g_danmakuFontSizePx * s);
         if (pixelSize < 8) pixelSize = 8;
         g_danmakuFont = CreateFontW(pixelSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
@@ -739,7 +506,7 @@ namespace WordReminder
             case WM_CREATE:
             {
                 // Fonts
-                const float s = GetDpiScale(hwnd);
+                const float s = Utils::GetDpiScale(hwnd);
                 if (!g_fontTitle)
                 {
                     g_fontTitle = CreateFontW((int)(20 * s), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
@@ -786,8 +553,8 @@ namespace WordReminder
                 SetTimer(hwnd, 1, 15000, nullptr); // 15秒自动关闭
 
                 // 应用系统主题及DWM效果
-                g_darkMode = IsSystemDarkMode();
-                ApplyDwmWindowAttributes(hwnd, g_darkMode);
+                g_darkMode = Utils::IsSystemDarkMode();
+                Utils::ApplyDwmWindowAttributes(hwnd, g_darkMode);
 
                 // 不再使用编辑框，直接绘制文本
 
@@ -840,19 +607,19 @@ namespace WordReminder
                 switch (scrollCode)
                 {
                     case SB_LINEUP:
-                        g_scrollPos = std::max(0, g_scrollPos - 20);
+                        g_scrollPos = (std::max)(0, g_scrollPos - 20);
                         AppendLog("[滚动调试] SB_LINEUP: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_LINEDOWN:
-                        g_scrollPos = std::min(g_scrollMax, g_scrollPos + 20);
+                        g_scrollPos = (std::min)(g_scrollMax, g_scrollPos + 20);
                         AppendLog("[滚动调试] SB_LINEDOWN: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_PAGEUP:
-                        g_scrollPos = std::max(0, g_scrollPos - 100);
+                        g_scrollPos = (std::max)(0, g_scrollPos - 100);
                         AppendLog("[滚动调试] SB_PAGEUP: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_PAGEDOWN:
-                        g_scrollPos = std::min(g_scrollMax, g_scrollPos + 100);
+                        g_scrollPos = (std::min)(g_scrollMax, g_scrollPos + 100);
                         AppendLog("[滚动调试] SB_PAGEDOWN: 新scrollPos=" + std::to_string(g_scrollPos));
                         break;
                     case SB_THUMBTRACK:
@@ -870,7 +637,7 @@ namespace WordReminder
             {
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
                 int oldScrollPos = g_scrollPos;
-                g_scrollPos = std::max(0, std::min(g_scrollMax, g_scrollPos - delta / 4));
+                g_scrollPos = (std::max)(0, (std::min)(g_scrollMax, g_scrollPos - delta / 4));
                 
                 // 添加鼠标滚轮调试日志
                 AppendLog("[滚动调试] WM_MOUSEWHEEL: delta=" + std::to_string(delta) + 
@@ -896,7 +663,7 @@ namespace WordReminder
                 {
                     // 计算滑块位置
                     int scrollbarHeight = rc.bottom - rc.top;
-                    int thumbHeight = std::max(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
+                    int thumbHeight = (std::max)(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
                     int thumbY = (g_scrollPos * (scrollbarHeight - thumbHeight)) / g_scrollMax;
                     
                     if (y >= thumbY && y <= thumbY + thumbHeight)
@@ -909,7 +676,7 @@ namespace WordReminder
                     {
                         // 点击在滚动条轨道上，跳转到对应位置
                         int newPos = (y * g_scrollMax) / scrollbarHeight;
-                        g_scrollPos = std::max(0, std::min(g_scrollMax, newPos));
+                        g_scrollPos = (std::max)(0, (std::min)(g_scrollMax, newPos));
                         AppendLog("[滚动调试] 点击滚动条轨道: 新位置=" + std::to_string(g_scrollPos));
                         InvalidateRect(hwnd, nullptr, TRUE);
                     }
@@ -926,7 +693,7 @@ namespace WordReminder
                     int scrollbarHeight = rc.bottom - rc.top;
                     
                     int newPos = (y * g_scrollMax) / scrollbarHeight;
-                    g_scrollPos = std::max(0, std::min(g_scrollMax, newPos));
+                    g_scrollPos = (std::max)(0, (std::min)(g_scrollMax, newPos));
                     // 避免擦除背景导致的闪烁
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -1001,7 +768,7 @@ namespace WordReminder
                         {
                             wordsOnly += L"\n";
                         }
-                        wordsOnly += Utf8ToWide(entry.word);
+                        wordsOnly += Utils::Utf8ToWide(entry.word);
                     }
                     
                     if (!wordsOnly.empty())
@@ -1177,7 +944,7 @@ namespace WordReminder
                     }
                     
                     // 计算滑块位置和大小
-                    int thumbHeight = std::max(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
+                    int thumbHeight = (std::max)(20, (scrollbarHeight * scrollbarHeight) / (scrollbarHeight + g_scrollMax));
                     int thumbY = scrollbarY + (g_scrollPos * (scrollbarHeight - thumbHeight)) / g_scrollMax;
                     
                     // 绘制滑块
@@ -1402,8 +1169,8 @@ namespace WordReminder
         for (size_t i = 0; i < dueWords.size(); ++i)
         {
             const auto& entry = dueWords[i];
-            std::wstring word = Utf8ToWide(entry.word);
-            std::wstring meaning = Utf8ToWide(entry.meaning);
+            std::wstring word = Utils::Utf8ToWide(entry.word);
+            std::wstring meaning = Utils::Utf8ToWide(entry.meaning);
             
             if (i > 0)
             {
@@ -1438,8 +1205,8 @@ namespace WordReminder
                 
                 // 内容区域的实际可用高度（减去上下边距）
                 int contentAreaHeight = content.bottom - content.top - 80; // 减去上下边距
-                g_scrollMax = std::max(0, totalHeight - contentAreaHeight);
-                g_scrollPos = std::min(g_scrollPos, g_scrollMax);
+                g_scrollMax = (std::max)(0, totalHeight - contentAreaHeight);
+                g_scrollPos = (std::min)(g_scrollPos, g_scrollMax);
                 
                 // 添加详细的滚动范围计算调试日志
                 AppendLog("[滚动调试] 详细计算: measureRc宽度=" + std::to_string(measureRc.right - measureRc.left) + 
@@ -1573,7 +1340,7 @@ namespace WordReminder
             
             // 内容区域的实际可用高度（减去上下边距）
             int contentAreaHeight = content.bottom - content.top - 80;
-            g_scrollMax = std::max(0, totalHeight - contentAreaHeight);
+            g_scrollMax = (std::max)(0, totalHeight - contentAreaHeight);
             g_scrollPos = 0; // 重置滚动位置
             
             AppendLog("[滚动调试] 窗口创建后设置滚动范围: totalHeight=" + std::to_string(totalHeight) + 
@@ -1685,7 +1452,7 @@ namespace WordReminder
                     }
                     
                     // 添加新的弹幕（基于可配置的间隔）
-                    if (g_danmakuTimer > (g_state ? std::max(0.5f, g_state->danmakuIntervalSec) : 3.0f))
+                    if (g_danmakuTimer > (g_state ? (std::max)(0.5f, g_state->danmakuIntervalSec) : 3.0f))
                     {
                         g_danmakuTimer = 0.0f;
                         
@@ -1702,7 +1469,7 @@ namespace WordReminder
                             const auto& word = g_state->words[randomIndex];
                             
                             // 添加到弹幕列表
-                            g_danmakuWords.push_back(Utf8ToWide(word.word + " - " + word.meaning));
+                            g_danmakuWords.push_back(Utils::Utf8ToWide(word.word + " - " + word.meaning));
                             g_danmakuPositions.push_back((float)windowWidth); // 从弹幕窗口右侧开始
                             g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
                             g_danmakuOpacities.push_back(0.0f); // 初始透明
@@ -1987,7 +1754,7 @@ namespace WordReminder
             if (!g_state->words.empty())
             {
                 // 随机选择3个单词作为初始弹幕
-                for (size_t i = 0; i < std::min(g_state->words.size(), size_t(3)); ++i)
+                for (size_t i = 0; i < (std::min)(g_state->words.size(), size_t(3)); ++i)
                 {
                     int randomIndex = rand() % g_state->words.size();
                     dueWords.push_back(g_state->words[randomIndex]);
@@ -1998,12 +1765,6 @@ namespace WordReminder
             {
                 AppendLog("[弹幕测试] 单词列表为空，将显示提示信息");
             }
-        }
-        
-        // 确保弹幕窗口存在
-        if (!g_danmakuHwnd)
-        {
-            CreateDanmakuWindow();
         }
         
         // 确保弹幕窗口存在
@@ -2032,10 +1793,10 @@ namespace WordReminder
             int windowWidth = clientRect.right - clientRect.left;
             int windowHeight = clientRect.bottom - clientRect.top;
             
-            for (size_t i = 0; i < std::min(dueWords.size(), size_t(3)); ++i)
+            for (size_t i = 0; i < (std::min)(dueWords.size(), size_t(3)); ++i)
             {
                 const auto& word = dueWords[i];
-                g_danmakuWords.push_back(Utf8ToWide(word.word + " - " + word.meaning));
+                g_danmakuWords.push_back(Utils::Utf8ToWide(word.word + " - " + word.meaning));
                 // 从弹幕窗口右侧开始，适应新的窗口大小
                 g_danmakuPositions.push_back((float)(windowWidth - i * 30.0f)); // 从窗口右侧开始，错开位置
                 g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
@@ -2070,7 +1831,7 @@ namespace WordReminder
             DestroyDanmakuWindow();
         }
     }
-#endif
+//#endif
     
     const char* GetFeatureName()
     {
@@ -2349,7 +2110,7 @@ namespace WordReminder
             static int minutesOnly = 30;
             if (ImGui::IsWindowAppearing())
             {
-                minutesOnly = std::max(1, g_state->reminderSeconds / 60);
+                minutesOnly = (std::max)(1, g_state->reminderSeconds / 60);
             }
             if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
             {
@@ -2464,7 +2225,7 @@ namespace WordReminder
                     ImGui::SameLine();
                     {
                         std::string id = std::string("##word_") + std::to_string(i);
-                        DrawCopyableText(id.c_str(), entry.word);
+                        Utils::DrawCopyableText(id.c_str(), entry.word);
                     }
                     
                     // 已移除音标显示
@@ -2472,7 +2233,7 @@ namespace WordReminder
                     ImGui::TextWrapped("释义:");
                     {
                         std::string idm = std::string("##meaning_") + std::to_string(i);
-                        DrawCopyableMultiline(idm.c_str(), entry.meaning);
+                        Utils::DrawCopyableMultiline(idm.c_str(), entry.meaning);
                     }
                     
                     if (entry.isMastered)
@@ -2483,7 +2244,7 @@ namespace WordReminder
                     {
                         ImGui::Text("复习次数: %d | 下次提醒: %s", 
                                    entry.reviewCount, 
-                                   TimeUntilNow(entry.remindTime).c_str());
+                                   Utils::TimeUntilNow(entry.remindTime).c_str());
                     }
                     
                     // 操作按钮

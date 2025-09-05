@@ -67,6 +67,7 @@ set(APP_SOURCES
     src/vs_inspector.cpp
     src/feature_manager.cpp
     src/word_reminder.cpp
+    src/word_reminder_utils.cpp
 )
 
 # Create executable (use WinMain entry on Windows+D3D11)
