@@ -1484,7 +1484,7 @@ namespace WordReminder
             // 确保窗口可见
             if (!g_windowShouldBeVisible)
             {
-                ShowWindow(g_reminderHwnd, SW_SHOW);
+                ShowWindow(g_reminderHwnd, SW_SHOWNOACTIVATE);
                 g_windowShouldBeVisible = true;
             }
             return;
@@ -1538,7 +1538,7 @@ namespace WordReminder
         }
 
         g_reminderHwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_COMPOSITED,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_COMPOSITED | WS_EX_NOACTIVATE,
             wc.lpszClassName,
             L"提醒",
             WS_CAPTION, // 移除 WS_VSCROLL，使用自定义滚动条
@@ -1548,13 +1548,13 @@ namespace WordReminder
 
         
         // 添加窗口创建调试日志
-        AppendLog("[滚动调试] 窗口创建: 使用自定义滚动条, 尺寸=" + std::to_string(width) + "x" + std::to_string(height) + 
+        AppendLog("[窗口] 创建非激活提醒窗口: 使用WS_EX_NOACTIVATE避免中断用户输入, 尺寸=" + std::to_string(width) + "x" + std::to_string(height) + 
                  ", 位置=" + std::to_string(x) + "," + std::to_string(y) + 
                  ", 窗口句柄=" + (g_reminderHwnd ? "有效" : "无效"));
 
         if (g_reminderHwnd)
         {
-            ShowWindow(g_reminderHwnd, SW_SHOWNORMAL);
+            ShowWindow(g_reminderHwnd, SW_SHOWNOACTIVATE);
             UpdateWindow(g_reminderHwnd);
             g_windowShouldBeVisible = true;
             
