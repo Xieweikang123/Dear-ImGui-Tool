@@ -927,9 +927,15 @@ namespace WordReminder
                     
                     int newPos = (y * g_scrollMax) / scrollbarHeight;
                     g_scrollPos = std::max(0, std::min(g_scrollMax, newPos));
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    // 避免擦除背景导致的闪烁
+                    InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
+            }
+            case WM_ERASEBKGND:
+            {
+                // 告知系统我们自行完成背景绘制，避免闪烁
+                return 1;
             }
             case WM_LBUTTONUP:
             {
@@ -1718,7 +1724,7 @@ namespace WordReminder
                         }
                     }
                     
-                    InvalidateRect(hwnd, nullptr, TRUE);
+                    InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
             }
@@ -1727,13 +1733,12 @@ namespace WordReminder
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hwnd, &ps);
                 
-                // 调试：每1000次绘制输出一次状态（大幅减少日志频率）
+                // 降低日志频率避免干扰渲染
                 static int paintCount = 0;
-                paintCount++;
-                if (paintCount % 1000 == 0)
+                if (++paintCount % 5000 == 0)
                 {
-                    AppendLog("[弹幕绘制] 绘制次数: " + std::to_string(paintCount) + 
-                             ", 弹幕数量: " + std::to_string(g_danmakuWords.size()));
+                    AppendLog("[弹幕绘制] paintCount=" + std::to_string(paintCount) + 
+                             ", words=" + std::to_string(g_danmakuWords.size()));
                 }
                 
                 // 创建双缓冲绘制，减少闪烁
@@ -1747,9 +1752,10 @@ namespace WordReminder
                 HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
                 
                 // 在内存DC上绘制
+                static bool loggedEmptyOnce = false;
                 if (g_danmakuWords.empty())
                 {
-                    AppendLog("[弹幕绘制] 弹幕列表为空，显示默认测试单词");
+                    if (!loggedEmptyOnce) { AppendLog("[弹幕绘制] 弹幕列表为空"); loggedEmptyOnce = true; }
                     
                     // 设置字体
                     if (g_danmakuFont) SelectObject(memDC, g_danmakuFont);
@@ -1766,7 +1772,10 @@ namespace WordReminder
                 }
                 else
                 {
-                    // 设置黑色背景
+                    loggedEmptyOnce = false;
+                    // 填充黑色背景，避免底层内容残留
+                    HBRUSH bg = (HBRUSH)GetStockObject(BLACK_BRUSH);
+                    FillRect(memDC, &clientRect, bg);
                     SetBkMode(memDC, OPAQUE);
                     SetBkColor(memDC, RGB(0, 0, 0));
                     
@@ -1918,8 +1927,8 @@ namespace WordReminder
 
         if (g_danmakuHwnd)
         {
-            // 设置窗口轻微透明，确保内容可见
-            SetLayeredWindowAttributes(g_danmakuHwnd, 0, 200, LWA_ALPHA);
+            // 设为不透明，避免合成器引入的轻微闪烁
+            SetLayeredWindowAttributes(g_danmakuHwnd, 0, 255, LWA_ALPHA);
             ShowWindow(g_danmakuHwnd, SW_SHOW);
             UpdateWindow(g_danmakuHwnd);
             
