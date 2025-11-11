@@ -275,16 +275,21 @@ namespace VSInspector
         // Ensure current selection is reflected in g_savedConfigs
         if (!g_currentConfigName.empty())
         {
+            const unsigned long long nowTs = static_cast<unsigned long long>(time(nullptr));
             bool found = false;
-            for (auto& config : g_savedConfigs)
+            for (size_t idx = 0; idx < g_savedConfigs.size(); ++idx)
             {
+                auto config = g_savedConfigs[idx];
                 if (config.name == g_currentConfigName)
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
                     config.cursorFolderPath = g_selectedCursorFolder;
                     config.feishuPath = g_feishuPath;
                     config.wechatPath = g_wechatPath;
-                    if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
+                    if (config.createdAt == 0) config.createdAt = nowTs;
+                    config.lastUsedAt = nowTs;
+                    g_savedConfigs.erase(g_savedConfigs.begin() + static_cast<std::ptrdiff_t>(idx));
+                    g_savedConfigs.insert(g_savedConfigs.begin(), config);
                     found = true;
                     break;
                 }
@@ -297,8 +302,9 @@ namespace VSInspector
                 newConfig.cursorFolderPath = g_selectedCursorFolder;
                 newConfig.feishuPath = g_feishuPath;
                 newConfig.wechatPath = g_wechatPath;
-                newConfig.createdAt = (unsigned long long)time(nullptr);
-                g_savedConfigs.push_back(newConfig);
+                newConfig.createdAt = nowTs;
+                newConfig.lastUsedAt = nowTs;
+                g_savedConfigs.insert(g_savedConfigs.begin(), newConfig);
             }
         }
 
@@ -429,14 +435,21 @@ namespace VSInspector
         if (!g_currentConfigName.empty())
         {
             // Find existing config or create new one
+            const unsigned long long nowTs = static_cast<unsigned long long>(time(nullptr));
             bool found = false;
-            for (auto& config : g_savedConfigs)
+            for (size_t idx = 0; idx < g_savedConfigs.size(); ++idx)
             {
+                auto config = g_savedConfigs[idx];
                 if (config.name == g_currentConfigName)
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
                     config.cursorFolderPath = g_selectedCursorFolder;
-                    if (config.createdAt == 0) config.createdAt = (unsigned long long)time(nullptr);
+                    config.feishuPath = g_feishuPath;
+                    config.wechatPath = g_wechatPath;
+                    if (config.createdAt == 0) config.createdAt = nowTs;
+                    config.lastUsedAt = nowTs;
+                    g_savedConfigs.erase(g_savedConfigs.begin() + static_cast<std::ptrdiff_t>(idx));
+                    g_savedConfigs.insert(g_savedConfigs.begin(), config);
                     found = true;
                     break;
                 }
@@ -447,8 +460,11 @@ namespace VSInspector
                 newConfig.name = g_currentConfigName;
                 newConfig.vsSolutionPath = g_selectedSlnPath;
                 newConfig.cursorFolderPath = g_selectedCursorFolder;
-                newConfig.createdAt = (unsigned long long)time(nullptr);
-                g_savedConfigs.push_back(newConfig);
+                newConfig.feishuPath = g_feishuPath;
+                newConfig.wechatPath = g_wechatPath;
+                newConfig.createdAt = nowTs;
+                newConfig.lastUsedAt = nowTs;
+                g_savedConfigs.insert(g_savedConfigs.begin(), newConfig);
             }
         }
 
@@ -2957,24 +2973,6 @@ namespace VSInspector
             ImGui::TextDisabled("Select VS solution or Cursor folder first");
         }
         
-        // Launch Feishu
-        if (!g_feishuPath.empty())
-        {
-            if (ImGui::Button("[Launch Feishu]"))
-            {
-                LaunchFeishu();
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("Save Feishu path first");
-        }
-        
-        // Launch WeChat
-        if (ImGui::Button("[Launch WeChat]"))
-        {
-            LaunchWechat();
-        }
         
                  // Third column (only in wide layout): Configuration Management
          if (useWideLayout)
