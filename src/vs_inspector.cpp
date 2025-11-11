@@ -10,6 +10,7 @@
 #include <iterator>
 #include <cstring>
 #include <ctime>
+#include <cctype>
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
@@ -83,6 +84,7 @@ namespace VSInspector
 
              // 用于主界面配置名称输入框的全局变量
     static char g_mainConfigNameBuf[256] = {0};
+    static char g_configSearchBuf[128] = {0};
     static bool g_shouldFillConfigName = false;
     
     // 自动刷新相关变量
@@ -169,6 +171,48 @@ namespace VSInspector
             }
         }
         return result;
+    }
+
+    static std::string TrimCopy(const std::string& s)
+    {
+        size_t start = 0;
+        while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) start++;
+        size_t end = s.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) end--;
+        return s.substr(start, end - start);
+    }
+
+    static std::string ToLowerCopy(const std::string& s)
+    {
+        std::string out;
+        out.reserve(s.size());
+        for (unsigned char ch : s)
+        {
+            out.push_back(static_cast<char>(std::tolower(ch)));
+        }
+        return out;
+    }
+
+    static bool ContainsIgnoreCase(const std::string& text, const std::string& filterLower)
+    {
+        if (filterLower.empty()) return true;
+        if (text.empty()) return false;
+        std::string textLower = ToLowerCopy(text);
+        return textLower.find(filterLower) != std::string::npos;
+    }
+
+    static bool MatchesConfigSearch(const SavedConfig& config, const std::vector<std::string>& cursorPaths, const std::string& filterLower)
+    {
+        if (filterLower.empty()) return true;
+        if (ContainsIgnoreCase(config.name, filterLower)) return true;
+        if (ContainsIgnoreCase(config.vsSolutionPath, filterLower)) return true;
+        if (ContainsIgnoreCase(config.feishuPath, filterLower)) return true;
+        if (ContainsIgnoreCase(config.wechatPath, filterLower)) return true;
+        for (const auto& path : cursorPaths)
+        {
+            if (ContainsIgnoreCase(path, filterLower)) return true;
+        }
+        return false;
     }
 
     static std::vector<std::string> GetConfigCursorPaths(const SavedConfig& config)
@@ -2856,6 +2900,9 @@ namespace VSInspector
         // 获取当前窗口宽度，动态调整布局
         float windowWidth = ImGui::GetWindowWidth();
         bool useWideLayout = windowWidth > 1200;
+        std::string configSearchRaw = TrimCopy(std::string(g_configSearchBuf));
+        std::string configSearchLower = ToLowerCopy(configSearchRaw);
+        bool hasConfigSearch = !configSearchLower.empty();
         
         if (useWideLayout)
         {
@@ -3252,9 +3299,23 @@ namespace VSInspector
              ImGui::Spacing();
              
              // Load existing configurations (sorted by lastUsedAt desc, then createdAt desc)
-             if (!g_savedConfigs.empty())
+            if (!g_savedConfigs.empty())
              {
                  ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                ImGui::SetNextItemWidth(-100.0f);
+                ImGui::InputTextWithHint("##ConfigSearchInputWide", "输入名称或路径过滤", g_configSearchBuf, sizeof(g_configSearchBuf));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("[Clear Search]"))
+                {
+                    g_configSearchBuf[0] = '\0';
+                    configSearchRaw.clear();
+                    configSearchLower.clear();
+                    hasConfigSearch = false;
+                }
+                ImGui::Spacing();
+                configSearchRaw = TrimCopy(std::string(g_configSearchBuf));
+                configSearchLower = ToLowerCopy(configSearchRaw);
+                hasConfigSearch = !configSearchLower.empty();
                  
                  // 创建可滚动的配置列表区域，使用剩余空间，自定义滚动条样式
                  ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f); // 设置滚动条宽度为8像素
@@ -3270,8 +3331,13 @@ namespace VSInspector
                      if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
                      return a.createdAt > b.createdAt;
                  });
+                int displayedCount = 0;
                  for (const auto& config : sorted)
                  {
+                    auto cursorPaths = GetConfigCursorPaths(config);
+                    if (hasConfigSearch && !MatchesConfigSearch(config, cursorPaths, configSearchLower))
+                        continue;
+                    displayedCount++;
                      ImGui::BeginGroup();
                      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
                      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
@@ -3280,7 +3346,6 @@ namespace VSInspector
                      ImGui::PopStyleColor();
                      if (!config.vsSolutionPath.empty())
                          ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
-                    auto cursorPaths = GetConfigCursorPaths(config);
                     if (!cursorPaths.empty())
                     {
                         if (cursorPaths.size() == 1)
@@ -3296,11 +3361,6 @@ namespace VSInspector
                             }
                         }
                     }
-                     if (!config.feishuPath.empty())
-                         ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
-                     if (!config.wechatPath.empty())
-                         ImGui::TextWrapped("WeChat: %s", config.wechatPath.c_str());
-                     
                      if (ImGui::Button(("[Load]##" + config.name).c_str()))
                      {
                          // Update last used timestamp then load
@@ -3350,6 +3410,10 @@ namespace VSInspector
                     }
                     ImGui::EndGroup();
                     ImGui::Spacing();
+                }
+                if (displayedCount == 0)
+                {
+                    ImGui::TextDisabled(hasConfigSearch ? "No configurations match current search" : "No saved configurations");
                 }
                 
                                  // 结束可滚动的配置列表区域
@@ -3416,13 +3480,32 @@ namespace VSInspector
             if (!g_savedConfigs.empty())
             {
                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "[Saved Configurations]");
+                ImGui::SetNextItemWidth(-100.0f);
+                ImGui::InputTextWithHint("##ConfigSearchInputNarrow", "输入名称或路径过滤", g_configSearchBuf, sizeof(g_configSearchBuf));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("[Clear Search]##Narrow"))
+                {
+                    g_configSearchBuf[0] = '\0';
+                    configSearchRaw.clear();
+                    configSearchLower.clear();
+                    hasConfigSearch = false;
+                }
+                ImGui::Spacing();
+                configSearchRaw = TrimCopy(std::string(g_configSearchBuf));
+                configSearchLower = ToLowerCopy(configSearchRaw);
+                hasConfigSearch = !configSearchLower.empty();
                 std::vector<SavedConfig> sorted = g_savedConfigs;
                 std::sort(sorted.begin(), sorted.end(), [](const SavedConfig& a, const SavedConfig& b){
                     if (a.lastUsedAt != b.lastUsedAt) return a.lastUsedAt > b.lastUsedAt;
                     return a.createdAt > b.createdAt;
                 });
+                int displayedCount = 0;
                 for (const auto& config : sorted)
                 {
+                    auto cursorPaths = GetConfigCursorPaths(config);
+                    if (hasConfigSearch && !MatchesConfigSearch(config, cursorPaths, configSearchLower))
+                        continue;
+                    displayedCount++;
                     ImGui::BeginGroup();
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 亮橙色
                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
@@ -3431,7 +3514,6 @@ namespace VSInspector
                     ImGui::PopStyleColor();
                     if (!config.vsSolutionPath.empty())
                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
-                    auto cursorPaths = GetConfigCursorPaths(config);
                     if (!cursorPaths.empty())
                     {
                         if (cursorPaths.size() == 1)
@@ -3499,6 +3581,10 @@ namespace VSInspector
                     }
                     ImGui::EndGroup();
                     ImGui::Spacing();
+                }
+                if (displayedCount == 0)
+                {
+                    ImGui::TextDisabled(hasConfigSearch ? "No configurations match current search" : "No saved configurations");
                 }
             }
             else
