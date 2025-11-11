@@ -57,6 +57,8 @@ namespace WordReminder
         bool isEditing = false;
         char editWord[256] = "";
         char editMeaning[512] = "";
+        int lastCopiedWordIndex = -1;
+        std::chrono::steady_clock::time_point lastCopiedWordTime{};
         
         // 设置
         bool autoShowReminders = true;
@@ -2226,6 +2228,29 @@ namespace WordReminder
                     {
                         std::string id = std::string("##word_") + std::to_string(i);
                         Utils::DrawCopyableText(id.c_str(), entry.word);
+                    }
+                    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                    if (ImGui::SmallButton("复制"))
+                    {
+                        ImGui::SetClipboardText(entry.word.c_str());
+                        AppendLog("[word] 复制单词: " + entry.word);
+                        g_state->lastCopiedWordIndex = i;
+                        g_state->lastCopiedWordTime = std::chrono::steady_clock::now();
+                    }
+
+                    if (g_state->lastCopiedWordIndex == i)
+                    {
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - g_state->lastCopiedWordTime);
+                        if (elapsed.count() < 1500)
+                        {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.2f, 0.7f, 0.2f, 1.0f), "已复制");
+                        }
+                        else
+                        {
+                            g_state->lastCopiedWordIndex = -1;
+                        }
                     }
                     
                     // 已移除音标显示

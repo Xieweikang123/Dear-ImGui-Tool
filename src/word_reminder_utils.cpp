@@ -218,6 +218,9 @@ namespace WordReminder
         {
             std::vector<char> buf(text.begin(), text.end());
             buf.push_back('\0');
+            ImGuiStyle& style = ImGui::GetStyle();
+            float textWidth = ImGui::CalcTextSize(text.c_str()).x + style.FramePadding.x * 2.0f;
+            ImGui::PushItemWidth(textWidth);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
@@ -227,6 +230,7 @@ namespace WordReminder
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
             ImGui::PopStyleVar();
+            ImGui::PopItemWidth();
         }
 
         // 只读可选择文本（多行自动换行），外观尽量接近普通文本

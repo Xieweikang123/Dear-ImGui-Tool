@@ -520,7 +520,10 @@ static UINT WM_TRAYICON = WM_APP + 1;
 static const UINT TRAY_ICON_ID = 1;
 static const UINT ID_TRAY_SHOW = 10001;
 static const UINT ID_TRAY_EXIT = 10002;
+static const UINT ID_TRAY_RESTORE = 10003;
 static NOTIFYICONDATA nid = {};
+static bool g_trayIconExists = false;
+static DWORD g_lastTrayCheckTime = 0;
 // ---- App icon (procedural) ----
 static HICON g_appIcon = nullptr;
 static HICON CreateAppIcon()
@@ -641,7 +644,12 @@ static float GetDpiScaleForWindow(HWND hwnd)
 
 static void AddTrayIcon(HWND hWnd)
 {
-    if (nid.cbSize != 0) return;
+    if (nid.cbSize != 0) {
+        AppendLog("[tray] Tray icon already exists, skipping add");
+        return;
+    }
+    
+    AppendLog("[tray] Adding tray icon...");
     nid.cbSize = sizeof(NOTIFYICONDATA);
     nid.hWnd = hWnd;
     nid.uID = TRAY_ICON_ID;
@@ -649,14 +657,67 @@ static void AddTrayIcon(HWND hWnd)
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = g_appIcon ? g_appIcon : LoadIcon(NULL, IDI_APPLICATION);
     lstrcpyn(nid.szTip, TEXT("单词学习提醒"), ARRAYSIZE(nid.szTip));
-    Shell_NotifyIcon(NIM_ADD, &nid);
+    
+    BOOL result = Shell_NotifyIcon(NIM_ADD, &nid);
+    if (result) {
+        g_trayIconExists = true;
+        AppendLog("[tray] Tray icon added successfully");
+    } else {
+        g_trayIconExists = false;
+        DWORD error = GetLastError();
+        AppendLog("[tray] Failed to add tray icon, error: " + std::to_string(error));
+    }
 }
 
 static void RemoveTrayIcon()
 {
-    if (nid.cbSize == 0) return;
-    Shell_NotifyIcon(NIM_DELETE, &nid);
+    if (nid.cbSize == 0) {
+        AppendLog("[tray] No tray icon to remove");
+        return;
+    }
+    
+    AppendLog("[tray] Removing tray icon...");
+    BOOL result = Shell_NotifyIcon(NIM_DELETE, &nid);
+    if (result) {
+        g_trayIconExists = false;
+        AppendLog("[tray] Tray icon removed successfully");
+    } else {
+        DWORD error = GetLastError();
+        AppendLog("[tray] Failed to remove tray icon, error: " + std::to_string(error));
+    }
     ZeroMemory(&nid, sizeof(nid));
+}
+
+static void CheckAndRestoreTrayIcon(HWND hWnd)
+{
+    DWORD currentTime = GetTickCount();
+    
+    // 每30秒检查一次托盘图标状态
+    if (currentTime - g_lastTrayCheckTime < 30000) {
+        return;
+    }
+    g_lastTrayCheckTime = currentTime;
+    
+    // 如果窗口是隐藏的且托盘图标应该存在但实际不存在，则重新添加
+    if (!IsWindowVisible(hWnd) && g_trayIconExists && nid.cbSize == 0) {
+        AppendLog("[tray] Detected missing tray icon, attempting to restore...");
+        nid.cbSize = sizeof(NOTIFYICONDATA);
+        nid.hWnd = hWnd;
+        nid.uID = TRAY_ICON_ID;
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAYICON;
+        nid.hIcon = g_appIcon ? g_appIcon : LoadIcon(NULL, IDI_APPLICATION);
+        lstrcpyn(nid.szTip, TEXT("单词学习提醒"), ARRAYSIZE(nid.szTip));
+        
+        BOOL result = Shell_NotifyIcon(NIM_ADD, &nid);
+        if (result) {
+            AppendLog("[tray] Tray icon restored successfully");
+        } else {
+            DWORD error = GetLastError();
+            AppendLog("[tray] Failed to restore tray icon, error: " + std::to_string(error));
+            g_trayIconExists = false;
+        }
+    }
 }
 
 static void ShowTrayMenu(HWND hWnd)
@@ -664,6 +725,8 @@ static void ShowTrayMenu(HWND hWnd)
     POINT pt; GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
     AppendMenu(menu, MF_STRING, ID_TRAY_SHOW, TEXT("显示窗口"));
+    AppendMenu(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(menu, MF_STRING, ID_TRAY_RESTORE, TEXT("恢复托盘图标"));
     AppendMenu(menu, MF_STRING, ID_TRAY_EXIT, TEXT("退出"));
     SetForegroundWindow(hWnd);
     UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_RIGHTALIGN, pt.x, pt.y, 0, hWnd, NULL);
@@ -672,6 +735,17 @@ static void ShowTrayMenu(HWND hWnd)
     {
         ShowWindow(hWnd, SW_SHOW);
         SetForegroundWindow(hWnd);
+    }
+    else if (cmd == ID_TRAY_RESTORE)
+    {
+        AppendLog("[tray] Manual tray icon restore requested");
+        // 强制重新添加托盘图标
+        if (nid.cbSize != 0) {
+            Shell_NotifyIcon(NIM_DELETE, &nid);
+            ZeroMemory(&nid, sizeof(nid));
+        }
+        g_trayIconExists = false;
+        AddTrayIcon(hWnd);
     }
     else if (cmd == ID_TRAY_EXIT)
     {
@@ -1078,6 +1152,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         }
         if (done)
             break;
+
+        // 检查并恢复托盘图标
+        CheckAndRestoreTrayIcon(hwnd);
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
