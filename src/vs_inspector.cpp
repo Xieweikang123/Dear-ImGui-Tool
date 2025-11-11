@@ -65,6 +65,7 @@ namespace VSInspector
         std::string name;
         std::string vsSolutionPath;
         std::string cursorFolderPath;
+        std::vector<std::string> cursorFolderPaths;
         std::string feishuPath;
         std::string wechatPath;
         unsigned long long createdAt = 0;    // unix time seconds
@@ -109,6 +110,105 @@ namespace VSInspector
     static int g_glitchCounter = 0;
     
 
+
+    static void NormalizeCursorPaths(SavedConfig& config)
+    {
+        std::vector<std::string> normalized;
+        normalized.reserve(config.cursorFolderPaths.size() + 1);
+
+        auto appendUnique = [&normalized](const std::string& value)
+        {
+            if (value.empty()) return;
+            if (std::find(normalized.begin(), normalized.end(), value) == normalized.end())
+            {
+                normalized.push_back(value);
+            }
+        };
+
+        appendUnique(config.cursorFolderPath);
+        for (const auto& path : config.cursorFolderPaths)
+        {
+            appendUnique(path);
+        }
+
+        config.cursorFolderPaths = normalized;
+        if (!config.cursorFolderPaths.empty())
+        {
+            config.cursorFolderPath = config.cursorFolderPaths.front();
+        }
+        else
+        {
+            config.cursorFolderPath.clear();
+        }
+    }
+
+    static std::vector<std::string> CollectCursorSelection()
+    {
+        std::vector<std::string> result;
+        result.reserve(g_selectedCursorFolders.size() + 1);
+        for (const auto& folder : g_selectedCursorFolders)
+        {
+            result.push_back(folder);
+        }
+        std::sort(result.begin(), result.end());
+        if (!g_selectedCursorFolder.empty())
+        {
+            auto it = std::find(result.begin(), result.end(), g_selectedCursorFolder);
+            if (it != result.end())
+            {
+                if (it != result.begin())
+                {
+                    std::string primary = *it;
+                    result.erase(it);
+                    result.insert(result.begin(), primary);
+                }
+            }
+            else
+            {
+                result.insert(result.begin(), g_selectedCursorFolder);
+            }
+        }
+        return result;
+    }
+
+    static std::vector<std::string> GetConfigCursorPaths(const SavedConfig& config)
+    {
+        if (!config.cursorFolderPaths.empty())
+        {
+            return config.cursorFolderPaths;
+        }
+        if (!config.cursorFolderPath.empty())
+        {
+            return { config.cursorFolderPath };
+        }
+        return {};
+    }
+
+    static void UpdateConfigCursorSelection(SavedConfig& config)
+    {
+        std::vector<std::string> selection = CollectCursorSelection();
+        config.cursorFolderPaths = selection;
+        if (!selection.empty())
+        {
+            config.cursorFolderPath = selection.front();
+        }
+        else
+        {
+            config.cursorFolderPath.clear();
+        }
+        NormalizeCursorPaths(config);
+    }
+
+    static std::string JoinPathsForLog(const std::vector<std::string>& paths)
+    {
+        std::string joined;
+        for (size_t i = 0; i < paths.size(); ++i)
+        {
+            if (i > 0) joined += "; ";
+            joined += paths[i];
+        }
+        return joined;
+    }
 
     // Forward declare env helper used by prefs
     static std::string GetEnvU8(const char* name);
@@ -283,7 +383,7 @@ namespace VSInspector
                 if (config.name == g_currentConfigName)
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
-                    config.cursorFolderPath = g_selectedCursorFolder;
+                    UpdateConfigCursorSelection(config);
                     config.feishuPath = g_feishuPath;
                     config.wechatPath = g_wechatPath;
                     if (config.createdAt == 0) config.createdAt = nowTs;
@@ -299,7 +399,7 @@ namespace VSInspector
                 SavedConfig newConfig;
                 newConfig.name = g_currentConfigName;
                 newConfig.vsSolutionPath = g_selectedSlnPath;
-                newConfig.cursorFolderPath = g_selectedCursorFolder;
+                UpdateConfigCursorSelection(newConfig);
                 newConfig.feishuPath = g_feishuPath;
                 newConfig.wechatPath = g_wechatPath;
                 newConfig.createdAt = nowTs;
@@ -311,14 +411,35 @@ namespace VSInspector
         fs::path p = filePath;
         std::ofstream ofs(p.string(), std::ios::binary);
         if (!ofs) { AppendLog(std::string("[prefs] open for write failed: ") + p.string()); return; }
+        for (auto& cfg : g_savedConfigs)
+        {
+            NormalizeCursorPaths(cfg);
+        }
         ofs << "{\n  \"configs\": [\n";
         for (size_t i = 0; i < g_savedConfigs.size(); ++i)
         {
             const auto& c = g_savedConfigs[i];
+            auto cursorPaths = GetConfigCursorPaths(c);
+            std::string cursorPrimary = cursorPaths.empty() ? "" : cursorPaths.front();
             ofs << "    {\n";
             ofs << "      \"name\": \"" << JsonEscape(c.name) << "\",\n";
             ofs << "      \"vs\": \"" << JsonEscape(c.vsSolutionPath) << "\",\n";
-            ofs << "      \"cursor\": \"" << JsonEscape(c.cursorFolderPath) << "\",\n";
+            ofs << "      \"cursor\": \"" << JsonEscape(cursorPrimary) << "\",\n";
+            ofs << "      \"cursorList\": [";
+            if (!cursorPaths.empty())
+            {
+                ofs << "\n";
+                for (size_t j = 0; j < cursorPaths.size(); ++j)
+                {
+                    ofs << "        \"" << JsonEscape(cursorPaths[j]) << "\"";
+                    ofs << (j + 1 < cursorPaths.size() ? ",\n" : "\n");
+                }
+                ofs << "      ],\n";
+            }
+            else
+            {
+                ofs << "],\n";
+            }
             ofs << "      \"feishu\": \"" << JsonEscape(c.feishuPath) << "\",\n";
             ofs << "      \"wechat\": \"" << JsonEscape(c.wechatPath) << "\",\n";
             ofs << "      \"createdAt\": " << c.createdAt << ",\n";
@@ -328,7 +449,15 @@ namespace VSInspector
         ofs << "  ]\n}";
         AppendLog(std::string("[prefs] saved JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
         if (!g_selectedSlnPath.empty()) AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
-        if (!g_selectedCursorFolder.empty()) AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+        auto cursorSelection = CollectCursorSelection();
+        if (!cursorSelection.empty())
+        {
+            AppendLog("[prefs] saved Cursor folders (" + std::to_string(cursorSelection.size()) + "): " + JoinPathsForLog(cursorSelection));
+        }
+        else if (!g_selectedCursorFolder.empty())
+        {
+            AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+        }
         if (!g_feishuPath.empty()) AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
         if (!g_wechatPath.empty()) AppendLog("[prefs] saved WeChat path: " + g_wechatPath);
     }
@@ -390,11 +519,33 @@ namespace VSInspector
                         std::string k; if (!ParseJsonString(content, pos, k)) { pos = content.size(); break; }
                         SkipWs(content, pos); if (pos >= content.size() || content[pos] != ':') { pos = content.size(); break; } pos++;
                         SkipWs(content, pos);
-                                                 if (k == "name" || k == "vs" || k == "cursor" || k == "feishu" || k == "wechat")
+                        if (k == "name" || k == "vs" || k == "cursor" || k == "feishu" || k == "wechat")
                          {
                              std::string v; if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
                              if (k == "name") c.name = v; else if (k == "vs") c.vsSolutionPath = v; else if (k == "cursor") c.cursorFolderPath = v; else if (k == "feishu") c.feishuPath = v; else c.wechatPath = v;
                          }
+                        else if (k == "cursorList")
+                        {
+                            if (pos >= content.size() || content[pos] != '[') { pos = content.size(); break; }
+                            pos++;
+                            SkipWs(content, pos);
+                            while (pos < content.size() && content[pos] != ']')
+                            {
+                                std::string v;
+                                if (!ParseJsonString(content, pos, v)) { pos = content.size(); break; }
+                                if (!v.empty())
+                                {
+                                    c.cursorFolderPaths.push_back(v);
+                                }
+                                SkipWs(content, pos);
+                                if (pos < content.size() && content[pos] == ',')
+                                {
+                                    pos++;
+                                    SkipWs(content, pos);
+                                }
+                            }
+                            if (pos < content.size() && content[pos] == ']') { pos++; }
+                        }
                         else if (k == "createdAt" || k == "lastUsedAt")
                         {
                             size_t start = pos; while (pos < content.size() && (isdigit((unsigned char)content[pos]) || content[pos]=='-')) pos++; unsigned long long val = strtoull(content.substr(start, pos-start).c_str(), nullptr, 10);
@@ -403,7 +554,11 @@ namespace VSInspector
                         SkipWs(content, pos);
                         if (pos < content.size() && content[pos] == ',') { pos++; }
                     }
-                    if (!c.name.empty()) out.push_back(c);
+                    if (!c.name.empty())
+                    {
+                        NormalizeCursorPaths(c);
+                        out.push_back(c);
+                    }
                     SkipWs(content, pos);
                     if (pos < content.size() && content[pos] == ',') { pos++; }
                     SkipWs(content, pos);
@@ -425,7 +580,14 @@ namespace VSInspector
         if (!ifs) { AppendLog(std::string("[prefs] open for read failed: ") + p.string()); return false; }
         std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
         bool ok = ParseConfigsFromJson(content, g_savedConfigs);
-        if (ok) AppendLog(std::string("[prefs] loaded JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
+        if (ok)
+        {
+            for (auto& cfg : g_savedConfigs)
+            {
+                NormalizeCursorPaths(cfg);
+            }
+            AppendLog(std::string("[prefs] loaded JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
+        }
         return ok;
     }
 
@@ -443,7 +605,7 @@ namespace VSInspector
                 if (config.name == g_currentConfigName)
                 {
                     config.vsSolutionPath = g_selectedSlnPath;
-                    config.cursorFolderPath = g_selectedCursorFolder;
+                    UpdateConfigCursorSelection(config);
                     config.feishuPath = g_feishuPath;
                     config.wechatPath = g_wechatPath;
                     if (config.createdAt == 0) config.createdAt = nowTs;
@@ -459,7 +621,7 @@ namespace VSInspector
                 SavedConfig newConfig;
                 newConfig.name = g_currentConfigName;
                 newConfig.vsSolutionPath = g_selectedSlnPath;
-                newConfig.cursorFolderPath = g_selectedCursorFolder;
+                UpdateConfigCursorSelection(newConfig);
                 newConfig.feishuPath = g_feishuPath;
                 newConfig.wechatPath = g_wechatPath;
                 newConfig.createdAt = nowTs;
@@ -472,12 +634,22 @@ namespace VSInspector
         fs::path p = GetPrefsFile();
         std::ofstream ofs(p.string(), std::ios::binary);
         if (!ofs) { AppendLog(std::string("[prefs] open for write failed: ") + p.string()); return; }
+        for (auto& cfg : g_savedConfigs)
+        {
+            NormalizeCursorPaths(cfg);
+        }
         
         for (const auto& config : g_savedConfigs)
         {
+            auto cursorPaths = GetConfigCursorPaths(config);
+            std::string primaryCursor = cursorPaths.empty() ? "" : cursorPaths.front();
                          ofs << "config=" << config.name << "\n";
              ofs << "sln=" << config.vsSolutionPath << "\n";
-             ofs << "cursor=" << config.cursorFolderPath << "\n";
+            ofs << "cursor=" << primaryCursor << "\n";
+            for (size_t idx = 1; idx < cursorPaths.size(); ++idx)
+            {
+                ofs << "cursor_extra=" << cursorPaths[idx] << "\n";
+            }
              ofs << "feishu=" << config.feishuPath << "\n";
              ofs << "wechat=" << config.wechatPath << "\n";
              ofs << "created=" << config.createdAt << "\n";
@@ -488,8 +660,15 @@ namespace VSInspector
                  AppendLog(std::string("[prefs] saved ") + std::to_string(g_savedConfigs.size()) + " config(s) to " + p.string());
          if (!g_selectedSlnPath.empty())
              AppendLog("[prefs] saved VS solution: " + g_selectedSlnPath);
-         if (!g_selectedCursorFolder.empty())
-             AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+        auto cursorSelection = CollectCursorSelection();
+        if (!cursorSelection.empty())
+        {
+            AppendLog("[prefs] saved Cursor folders (" + std::to_string(cursorSelection.size()) + "): " + JoinPathsForLog(cursorSelection));
+        }
+        else if (!g_selectedCursorFolder.empty())
+        {
+            AppendLog("[prefs] saved Cursor folder: " + g_selectedCursorFolder);
+        }
          if (!g_feishuPath.empty())
              AppendLog("[prefs] saved Feishu path: " + g_feishuPath);
          if (!g_wechatPath.empty())
@@ -515,6 +694,7 @@ namespace VSInspector
                 // End of config, save it
                 if (inConfig && !currentConfig.name.empty())
                 {
+                    NormalizeCursorPaths(currentConfig);
                     g_savedConfigs.push_back(currentConfig);
                 }
                 currentConfig = SavedConfig();
@@ -529,9 +709,23 @@ namespace VSInspector
             {
                 currentConfig.vsSolutionPath = line.substr(4);
             }
-                         else if (line.rfind("cursor=", 0) == 0)
+            else if (line.rfind("cursor=", 0) == 0)
              {
-                 currentConfig.cursorFolderPath = line.substr(7);
+                std::string value = line.substr(7);
+                currentConfig.cursorFolderPath = value;
+                currentConfig.cursorFolderPaths.clear();
+                if (!value.empty())
+                {
+                    currentConfig.cursorFolderPaths.push_back(value);
+                }
+            }
+            else if (line.rfind("cursor_extra=", 0) == 0)
+            {
+                std::string value = line.substr(13);
+                if (!value.empty())
+                {
+                    currentConfig.cursorFolderPaths.push_back(value);
+                }
              }
              else if (line.rfind("feishu=", 0) == 0)
              {
@@ -554,6 +748,7 @@ namespace VSInspector
         // Don't forget the last config if no separator
         if (inConfig && !currentConfig.name.empty())
         {
+            NormalizeCursorPaths(currentConfig);
             g_savedConfigs.push_back(currentConfig);
         }
         
@@ -588,7 +783,8 @@ namespace VSInspector
             if (config.name == configName)
             {
                                  g_selectedSlnPath = config.vsSolutionPath;
-                 g_selectedCursorFolder = config.cursorFolderPath;
+                auto cursorPaths = GetConfigCursorPaths(config);
+                g_selectedCursorFolder = cursorPaths.empty() ? std::string() : cursorPaths.front();
                  g_feishuPath = config.feishuPath;
                  g_wechatPath = config.wechatPath;
                  // Keep the multi-select sets in sync with single selection
@@ -596,14 +792,26 @@ namespace VSInspector
                  if (!g_selectedSlnPath.empty())
                      g_selectedSlnPaths.insert(g_selectedSlnPath);
                  g_selectedCursorFolders.clear();
-                 if (!g_selectedCursorFolder.empty())
-                     g_selectedCursorFolders.insert(g_selectedCursorFolder);
+                for (const auto& path : cursorPaths)
+                {
+                    g_selectedCursorFolders.insert(path);
+                }
+                if (g_selectedCursorFolders.empty() && !g_selectedCursorFolder.empty())
+                {
+                    g_selectedCursorFolders.insert(g_selectedCursorFolder);
+                }
                  g_currentConfigName = configName;
                 AppendLog("[prefs] loaded config: " + configName);
                                  if (!g_selectedSlnPath.empty())
                      AppendLog("[prefs] loaded VS solution: " + g_selectedSlnPath);
-                 if (!g_selectedCursorFolder.empty())
-                     AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+                if (!cursorPaths.empty())
+                {
+                    AppendLog("[prefs] loaded Cursor folders (" + std::to_string(cursorPaths.size()) + "): " + JoinPathsForLog(cursorPaths));
+                }
+                else if (!g_selectedCursorFolder.empty())
+                {
+                    AppendLog("[prefs] loaded Cursor folder: " + g_selectedCursorFolder);
+                }
                  if (!g_feishuPath.empty())
                      AppendLog("[prefs] loaded Feishu path: " + g_feishuPath);
                  if (!g_wechatPath.empty())
@@ -651,15 +859,23 @@ namespace VSInspector
                     if (cur.createdAt == 0 || (inc.createdAt != 0 && inc.createdAt < cur.createdAt)) cur.createdAt = inc.createdAt;
                     if (inc.lastUsedAt > cur.lastUsedAt) cur.lastUsedAt = inc.lastUsedAt;
                                          if (!inc.vsSolutionPath.empty()) cur.vsSolutionPath = inc.vsSolutionPath;
-                     if (!inc.cursorFolderPath.empty()) cur.cursorFolderPath = inc.cursorFolderPath;
+                    auto incomingCursorPaths = GetConfigCursorPaths(inc);
+                    if (!incomingCursorPaths.empty())
+                    {
+                        cur.cursorFolderPaths = incomingCursorPaths;
+                        cur.cursorFolderPath = incomingCursorPaths.front();
+                    }
                      if (!inc.feishuPath.empty()) cur.feishuPath = inc.feishuPath;
                      if (!inc.wechatPath.empty()) cur.wechatPath = inc.wechatPath;
+                    NormalizeCursorPaths(cur);
                     break;
                 }
             }
             if (!found)
             {
-                into.push_back(inc);
+                SavedConfig merged = inc;
+                NormalizeCursorPaths(merged);
+                into.push_back(merged);
             }
         }
     }
@@ -1678,7 +1894,7 @@ namespace VSInspector
         bool foundWechatRunning = false;
 
         // Load persisted prefs once per refresh to show defaults
-        if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
+        if (g_selectedSlnPath.empty() && g_selectedCursorFolders.empty() && g_selectedCursorFolder.empty())
         {
             LoadPrefs();
         }
@@ -2968,7 +3184,7 @@ namespace VSInspector
                 LaunchCursorWithFolder(g_selectedCursorFolder);
             }
         }
-        if (g_selectedSlnPath.empty() && g_selectedCursorFolder.empty())
+        if (g_selectedSlnPath.empty() && g_selectedCursorFolders.empty() && g_selectedCursorFolder.empty())
         {
             ImGui::TextDisabled("Select VS solution or Cursor folder first");
         }
@@ -3018,6 +3234,8 @@ namespace VSInspector
                  if (strlen(g_mainConfigNameBuf) > 0)
                  {
                      g_currentConfigName = g_mainConfigNameBuf;
+                     //log 要保存的内容
+                     
                      SavePrefs();
                      if (configExists)
                      {
@@ -3062,8 +3280,22 @@ namespace VSInspector
                      ImGui::PopStyleColor();
                      if (!config.vsSolutionPath.empty())
                          ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
-                     if (!config.cursorFolderPath.empty())
-                         ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                    auto cursorPaths = GetConfigCursorPaths(config);
+                    if (!cursorPaths.empty())
+                    {
+                        if (cursorPaths.size() == 1)
+                        {
+                            ImGui::TextWrapped("Cursor: %s", cursorPaths.front().c_str());
+                        }
+                        else
+                        {
+                            ImGui::Text("Cursor (%d):", static_cast<int>(cursorPaths.size()));
+                            for (const auto& path : cursorPaths)
+                            {
+                                ImGui::TextWrapped("- %s", path.c_str());
+                            }
+                        }
+                    }
                      if (!config.feishuPath.empty())
                          ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
                      if (!config.wechatPath.empty())
@@ -3199,8 +3431,22 @@ namespace VSInspector
                     ImGui::PopStyleColor();
                     if (!config.vsSolutionPath.empty())
                         ImGui::TextWrapped("VS: %s", config.vsSolutionPath.c_str());
-                    if (!config.cursorFolderPath.empty())
-                        ImGui::TextWrapped("Cursor: %s", config.cursorFolderPath.c_str());
+                    auto cursorPaths = GetConfigCursorPaths(config);
+                    if (!cursorPaths.empty())
+                    {
+                        if (cursorPaths.size() == 1)
+                        {
+                            ImGui::TextWrapped("Cursor: %s", cursorPaths.front().c_str());
+                        }
+                        else
+                        {
+                            ImGui::Text("Cursor (%d):", static_cast<int>(cursorPaths.size()));
+                            for (const auto& path : cursorPaths)
+                            {
+                                ImGui::TextWrapped("- %s", path.c_str());
+                            }
+                        }
+                    }
                     if (!config.feishuPath.empty())
                         ImGui::TextWrapped("Feishu: %s", config.feishuPath.c_str());
                     
