@@ -70,6 +70,10 @@ set(APP_SOURCES
     src/word_reminder_utils.cpp
 )
 
+if(WIN32)
+    list(APPEND APP_SOURCES app_icon.rc)
+endif()
+
 # Create executable (use WinMain entry on Windows+D3D11)
 if(WIN32 AND USE_D3D11)
     add_executable(${PROJECT_NAME} WIN32
