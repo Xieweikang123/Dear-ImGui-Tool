@@ -1365,83 +1365,51 @@ namespace VSInspector
         slnOut.clear();
         if (!pDisp) return false;
         
-        AppendLog("[vs] TryGetSolutionFullName: starting...");
-        
         DISPID dispidSolution = 0; 
         OLECHAR* nameSolution = L"Solution";
         if (FAILED(pDisp->GetIDsOfNames(IID_NULL, &nameSolution, 1, LOCALE_USER_DEFAULT, &dispidSolution)))
         {
-            AppendLog("[vs] GetIDsOfNames(Solution) failed");
             return false;
         }
-        
-        AppendLog("[vs] Got Solution DISPID: " + std::to_string(dispidSolution));
-        
         VARIANT resultSolution; 
         VariantInit(&resultSolution); 
         DISPPARAMS noArgs = {0};
         HRESULT hrInvokeSolution = pDisp->Invoke(dispidSolution, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultSolution, NULL, NULL);
         if (FAILED(hrInvokeSolution))
         {
-            AppendLog(std::string("[vs] Invoke(Solution) failed hr=") + std::to_string((long)hrInvokeSolution));
             VariantClear(&resultSolution);
             return false;
         }
-        
-        AppendLog("[vs] Successfully invoked Solution property, vt=" + std::to_string((int)resultSolution.vt));
-        
         bool ok = false;
         if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
         {
-            AppendLog("[vs] Solution is a dispatch object");
             IDispatch* pSolution = resultSolution.pdispVal;
             DISPID dispidFullName = 0; 
             OLECHAR* nameFullName = L"FullName";
             HRESULT hrNameFN = pSolution->GetIDsOfNames(IID_NULL, &nameFullName, 1, LOCALE_USER_DEFAULT, &dispidFullName);
             if (SUCCEEDED(hrNameFN))
             {
-                AppendLog("[vs] Got FullName DISPID: " + std::to_string(dispidFullName));
                 VARIANT resultFullName; 
                 VariantInit(&resultFullName);
                 HRESULT hrInvokeFN = pSolution->Invoke(dispidFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultFullName, NULL, NULL);
                 if (SUCCEEDED(hrInvokeFN))
                 {
-                    AppendLog("[vs] Successfully invoked FullName property, vt=" + std::to_string((int)resultFullName.vt));
                     if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
                     {
                         slnOut = WideToUtf8(resultFullName.bstrVal);
-                        AppendLog(std::string("[vs] Solution.FullName=") + slnOut);
                         ok = !slnOut.empty();
                     }
                     else if (resultFullName.vt == VT_EMPTY || resultFullName.vt == VT_NULL)
                     {
-                        AppendLog("[vs] Solution.FullName is empty or null - VS may be in Open Folder mode");
                         ok = false; // 空solution，但不算错误
                     }
-                    else
-                    {
-                        AppendLog(std::string("[vs] Solution.FullName unexpected vt=") + std::to_string((int)resultFullName.vt));
-                    }
-                }
-                else
-                {
-                    AppendLog(std::string("[vs] Invoke(Solution.FullName) failed hr=") + std::to_string((long)hrInvokeFN));
                 }
                 VariantClear(&resultFullName);
-            }
-            else
-            {
-                AppendLog(std::string("[vs] GetIDsOfNames(FullName) failed hr=") + std::to_string((long)hrNameFN));
             }
         }
         else if (resultSolution.vt == VT_EMPTY || resultSolution.vt == VT_NULL)
         {
-            AppendLog("[vs] Solution is empty or null - VS may be in Open Folder mode");
             ok = false; // 空solution，但不算错误
-        }
-        else
-        {
-            AppendLog(std::string("[vs] Solution is not a dispatch object, vt=") + std::to_string((int)resultSolution.vt));
         }
         VariantClear(&resultSolution);
         return ok;

@@ -55,13 +55,16 @@ struct ReplaceState
 
 static ReplaceState g_state;
 
+static std::string GetCurrentDateTimeString();
+
 static void AppendLog(const std::string& line)
 {
+    const std::string decoratedLine = "[" + GetCurrentDateTimeString() + "] " + line;
     std::lock_guard<std::mutex> lock(g_state.logMutex);
-    g_state.logLines.emplace_back(line);
+    g_state.logLines.emplace_back(decoratedLine);
     if (g_state.logFile.is_open())
     {
-        g_state.logFile << line << '\n';
+        g_state.logFile << decoratedLine << '\n';
         g_state.logFile.flush();
     }
 #ifdef _WIN32
@@ -73,7 +76,7 @@ static void AppendLog(const std::string& line)
     }
     if (globalLog.is_open())
     {
-        globalLog << line << '\n';
+        globalLog << decoratedLine << '\n';
         globalLog.flush();
     }
 #else
@@ -84,7 +87,7 @@ static void AppendLog(const std::string& line)
     }
     if (globalLog.is_open())
     {
-        globalLog << line << '\n';
+        globalLog << decoratedLine << '\n';
         globalLog.flush();
     }
 #endif
@@ -114,6 +117,22 @@ static std::string MakeTimestamp()
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d",
         tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    return std::string(buf);
+}
+
+static std::string GetCurrentDateTimeString()
+{
+    std::time_t t = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+        tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+        tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     return std::string(buf);
 }
 
@@ -517,6 +536,7 @@ static void ResizeSwapChain(HWND hWnd)
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 // ---- Tray icon support ----
 static UINT WM_TRAYICON = WM_APP + 1;
+static UINT WM_TASKBARCREATED = RegisterWindowMessageW(L"TaskbarCreated");
 static const UINT TRAY_ICON_ID = 1;
 static const UINT ID_TRAY_SHOW = 10001;
 static const UINT ID_TRAY_EXIT = 10002;
@@ -852,6 +872,23 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_appIcon) { DestroyIcon(g_appIcon); g_appIcon = nullptr; }
         PostQuitMessage(0);
         return 0;
+    default:
+        if (msg == WM_TASKBARCREATED)
+        {
+            if (g_trayIconExists)
+            {
+                AppendLog("[tray] Taskbar recreated, re-registering tray icon (" + GetCurrentDateTimeString() + ")");
+                ZeroMemory(&nid, sizeof(nid));
+                g_trayIconExists = false;
+                AddTrayIcon(hWnd);
+            }
+            else
+            {
+                AppendLog("[tray] Taskbar recreated but tray icon not expected, skipping");
+            }
+            return 0;
+        }
+        break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
