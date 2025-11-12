@@ -9,6 +9,7 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <cstring>
 #include <thread>
 #include <chrono>
 #ifdef _WIN32
@@ -289,13 +290,23 @@ namespace WordReminder
     static std::vector<float> g_danmakuPositions; // 每个弹幕的X位置
     static std::vector<float> g_danmakuYPositions; // 每个弹幕的Y位置
     static std::vector<float> g_danmakuOpacities; // 每个弹幕的透明度
-    static std::vector<float> g_danmakuSpeeds; // 每个弹幕的移动速度
+    static std::vector<float> g_danmakuSpeeds; // 每个弹幕的移动速度（像素/秒）
     static float g_danmakuTimer = 0.0f; // 弹幕计时器
     static bool g_danmakuEnabled = false; // 弹幕功能是否启用
     static HFONT g_danmakuFont = nullptr; // 弹幕字体
     static HBRUSH g_danmakuBrush = nullptr; // 弹幕背景画刷
     static HPEN g_danmakuPen = nullptr; // 弹幕边框画笔
     static int g_danmakuFontSizePx = 24; // 弹幕字体像素大小（可缩放）
+    static std::chrono::steady_clock::time_point g_danmakuLastTick{}; // 上一帧时间戳
+    static float g_danmakuLastDelta = 0.016f; // 上一帧的时间增量（秒）
+    static float g_danmakuFrameAccumulator = 0.0f; // 固定步长累积器
+    static HDC g_danmakuMemDC = nullptr; // 持久化的内存DC
+    static HBITMAP g_danmakuMemBitmap = nullptr; // 持久化的双缓冲位图
+    static int g_danmakuBufferWidth = 0;
+    static int g_danmakuBufferHeight = 0;
+    static std::vector<RECT> g_danmakuBounds; // 弹幕文本的当前包围框
+    static int g_danmakuHoverIndex = -1; // 当前悬浮的弹幕索引
+    static bool g_danmakuMousePressed = false; // 鼠标在弹幕上按下
 
     enum ReminderCmdIds { BTN_REVIEWED = 1001, BTN_SNOOZE = 1002, BTN_CLOSE = 1003, BTN_COPY = 1004 };
 
@@ -315,6 +326,146 @@ namespace WordReminder
                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                     CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
         AppendLog("[弹幕] 重建字体: sizePx=" + std::to_string(g_danmakuFontSizePx) + ", dpiScale=" + std::to_string((double)s));
+    }
+
+    static std::string WideToUtf8(const std::wstring& input)
+    {
+        if (input.empty()) return {};
+        int required = WideCharToMultiByte(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()), nullptr, 0, nullptr, nullptr);
+        if (required <= 0) return {};
+        std::string output(static_cast<size_t>(required), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()), output.data(), required, nullptr, nullptr);
+        return output;
+    }
+
+    static bool CopyTextToClipboard(HWND hwndOwner, const std::wstring& text)
+    {
+        if (!OpenClipboard(hwndOwner))
+        {
+            AppendLog("[弹幕] 打开剪贴板失败");
+            return false;
+        }
+        if (!EmptyClipboard())
+        {
+            AppendLog("[弹幕] 清空剪贴板失败");
+            CloseClipboard();
+            return false;
+        }
+
+        SIZE_T byteCount = (text.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, byteCount);
+        if (!hMem)
+        {
+            AppendLog("[弹幕] 分配剪贴板内存失败");
+            CloseClipboard();
+            return false;
+        }
+
+        auto* buffer = static_cast<wchar_t*>(GlobalLock(hMem));
+        if (!buffer)
+        {
+            GlobalFree(hMem);
+            AppendLog("[弹幕] 锁定剪贴板内存失败");
+            CloseClipboard();
+            return false;
+        }
+
+        memcpy(buffer, text.c_str(), text.size() * sizeof(wchar_t));
+        buffer[text.size()] = L'\0';
+        GlobalUnlock(hMem);
+
+        if (!SetClipboardData(CF_UNICODETEXT, hMem))
+        {
+            GlobalFree(hMem);
+            AppendLog("[弹幕] 设置剪贴板数据失败");
+            CloseClipboard();
+            return false;
+        }
+
+        CloseClipboard();
+        AppendLog("[弹幕] 已复制到剪贴板: " + WideToUtf8(text));
+        return true;
+    }
+
+    static void SpawnDanmakuEntry(HWND hwnd)
+    {
+        if (!hwnd) return;
+
+        RECT clientRect;
+        if (!GetClientRect(hwnd, &clientRect)) return;
+        int windowWidth = clientRect.right - clientRect.left;
+        int windowHeight = clientRect.bottom - clientRect.top;
+        if (windowWidth <= 0 || windowHeight <= 0) return;
+
+        auto addEntry = [&](const std::wstring& text)
+        {
+            g_danmakuWords.push_back(text);
+            g_danmakuPositions.push_back((float)windowWidth);
+            g_danmakuYPositions.push_back(20.0f + (rand() % (std::max)(windowHeight - 60, 1)));
+            g_danmakuOpacities.push_back(0.0f);
+            g_danmakuSpeeds.push_back(40.0f);
+            g_danmakuBounds.emplace_back(RECT{0, 0, 0, 0});
+        };
+
+        if (g_state && !g_state->words.empty())
+        {
+            int randomIndex = rand() % g_state->words.size();
+            const auto& word = g_state->words[randomIndex];
+            addEntry(Utils::Utf8ToWide(word.word + " - " + word.meaning));
+            AppendLog("[弹幕] 添加单词弹幕: " + word.word + " - " + word.meaning +
+                      ", 位置=(" + std::to_string(windowWidth) + ", " + std::to_string(g_danmakuYPositions.back()) + ")");
+        }
+        else
+        {
+            addEntry(L"请添加单词到列表中");
+            AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中");
+        }
+    }
+
+    static void AdvanceDanmakuFrame(HWND hwnd, float stepSec)
+    {
+        if (stepSec <= 0.0f) return;
+
+        for (size_t i = 0; i < g_danmakuPositions.size();)
+        {
+            if (static_cast<int>(i) == g_danmakuHoverIndex)
+            {
+                ++i;
+                continue;
+            }
+
+            g_danmakuPositions[i] -= g_danmakuSpeeds[i] * stepSec;
+            if (g_danmakuPositions[i] < -100.0f)
+            {
+                if (static_cast<int>(i) == g_danmakuHoverIndex)
+                {
+                    g_danmakuHoverIndex = -1;
+                }
+                else if (g_danmakuHoverIndex > static_cast<int>(i))
+                {
+                    g_danmakuHoverIndex--;
+                }
+                g_danmakuWords.erase(g_danmakuWords.begin() + i);
+                g_danmakuPositions.erase(g_danmakuPositions.begin() + i);
+                g_danmakuYPositions.erase(g_danmakuYPositions.begin() + i);
+                g_danmakuOpacities.erase(g_danmakuOpacities.begin() + i);
+                g_danmakuSpeeds.erase(g_danmakuSpeeds.begin() + i);
+                if (i < g_danmakuBounds.size())
+                {
+                    g_danmakuBounds.erase(g_danmakuBounds.begin() + i);
+                }
+                continue;
+            }
+            ++i;
+        }
+
+        const float interval = g_state ? (std::max)(0.5f, g_state->danmakuIntervalSec) : 3.0f;
+        g_danmakuTimer += stepSec;
+        while (g_danmakuTimer >= interval)
+        {
+            g_danmakuTimer -= interval;
+            SpawnDanmakuEntry(hwnd);
+        }
     }
 
     static float GetSystemDpiScale()
@@ -1399,7 +1550,9 @@ namespace WordReminder
                 AppendLog("[弹幕] 初始字体大小=" + std::to_string(g_danmakuFontSizePx));
                 
                 // 设置定时器用于动画更新
-                SetTimer(hwnd, 1, 33, nullptr); // 约30FPS，减少闪烁
+                SetTimer(hwnd, 1, 16, nullptr); // 约60FPS，增强流畅度
+                g_danmakuLastTick = std::chrono::steady_clock::now();
+                g_danmakuFrameAccumulator = 0.0f;
                 AppendLog("[弹幕] 窗口创建完成，定时器已设置");
                 return 0;
             }
@@ -1424,75 +1577,22 @@ namespace WordReminder
             {
                 if (wParam == 1)
                 {
-                    // 更新弹幕动画
-                    g_danmakuTimer += 0.033f; // 约33ms
-                    
-                    // 调试：每500帧输出一次弹幕状态（减少日志频率）
-                    static int frameCount = 0;
-                    frameCount++;
-                    if (frameCount % 500 == 0)
+                    const auto now = std::chrono::steady_clock::now();
+                    float deltaSec = std::chrono::duration<float>(now - g_danmakuLastTick).count();
+                    g_danmakuLastTick = now;
+                    if (deltaSec < 0.0f) deltaSec = 0.0f;
+                    if (deltaSec > 0.05f) deltaSec = 0.05f; // 防止卡顿时位移过大
+                    g_danmakuFrameAccumulator += deltaSec;
+                    const float fixedStep = 1.0f / 100.0f;
+                    int stepCount = 0;
+                    while (g_danmakuFrameAccumulator >= fixedStep && stepCount < 4)
                     {
-                        AppendLog("[弹幕动画] 弹幕数量=" + std::to_string(g_danmakuWords.size()) + 
-                                 ", 计时器=" + std::to_string(g_danmakuTimer));
+                        AdvanceDanmakuFrame(hwnd, fixedStep);
+                        g_danmakuFrameAccumulator -= fixedStep;
+                        g_danmakuLastDelta = fixedStep;
+                        ++stepCount;
                     }
-                    
-                    // 更新每个弹幕的位置
-                    for (size_t i = 0; i < g_danmakuPositions.size(); ++i)
-                    {
-                        g_danmakuPositions[i] -= g_danmakuSpeeds[i];
-                        
-                        // 如果弹幕移出弹幕窗口左侧，移除它
-                        if (g_danmakuPositions[i] < -100)
-                        {
-                            g_danmakuWords.erase(g_danmakuWords.begin() + i);
-                            g_danmakuPositions.erase(g_danmakuPositions.begin() + i);
-                            g_danmakuYPositions.erase(g_danmakuYPositions.begin() + i);
-                            g_danmakuOpacities.erase(g_danmakuOpacities.begin() + i);
-                            g_danmakuSpeeds.erase(g_danmakuSpeeds.begin() + i);
-                            --i; // 调整索引
-                        }
-                    }
-                    
-                    // 添加新的弹幕（基于可配置的间隔）
-                    if (g_danmakuTimer > (g_state ? (std::max)(0.5f, g_state->danmakuIntervalSec) : 3.0f))
-                    {
-                        g_danmakuTimer = 0.0f;
-                        
-                        // 获取窗口客户区大小
-                        RECT clientRect;
-                        GetClientRect(hwnd, &clientRect);
-                        int windowWidth = clientRect.right - clientRect.left;
-                        int windowHeight = clientRect.bottom - clientRect.top;
-                        
-                        // 从单词列表中随机选择一个单词
-                        if (!g_state->words.empty())
-                        {
-                            int randomIndex = rand() % g_state->words.size();
-                            const auto& word = g_state->words[randomIndex];
-                            
-                            // 添加到弹幕列表
-                            g_danmakuWords.push_back(Utils::Utf8ToWide(word.word + " - " + word.meaning));
-                            g_danmakuPositions.push_back((float)windowWidth); // 从弹幕窗口右侧开始
-                            g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
-                            g_danmakuOpacities.push_back(0.0f); // 初始透明
-                            g_danmakuSpeeds.push_back(2.0f + (rand() % 3)); // 随机速度
-                            
-                            AppendLog("[弹幕] 添加单词弹幕: " + word.word + " - " + word.meaning + 
-                                     ", 位置=(" + std::to_string(windowWidth) + ", " + std::to_string(g_danmakuYPositions.back()) + ")");
-                        }
-                        else
-                        {
-                            // 如果单词列表为空，添加提示弹幕
-                            g_danmakuWords.push_back(L"请添加单词到列表中");
-                            g_danmakuPositions.push_back((float)windowWidth);
-                            g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60)));
-                            g_danmakuOpacities.push_back(0.0f);
-                            g_danmakuSpeeds.push_back(2.0f + (rand() % 3));
-                            
-                            AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中");
-                        }
-                    }
-                    
+
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
@@ -1516,37 +1616,65 @@ namespace WordReminder
                 int width = clientRect.right - clientRect.left;
                 int height = clientRect.bottom - clientRect.top;
                 
-                HDC memDC = CreateCompatibleDC(hdc);
-                HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
-                HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+                if (!g_danmakuMemDC)
+                {
+                    g_danmakuMemDC = CreateCompatibleDC(hdc);
+                }
+                if (!g_danmakuMemDC)
+                {
+                    EndPaint(hwnd, &ps);
+                    return 0;
+                }
+
+                if (width != g_danmakuBufferWidth || height != g_danmakuBufferHeight || !g_danmakuMemBitmap)
+                {
+                    if (g_danmakuMemBitmap)
+                    {
+                        DeleteObject(g_danmakuMemBitmap);
+                        g_danmakuMemBitmap = nullptr;
+                    }
+                    g_danmakuMemBitmap = CreateCompatibleBitmap(hdc, width, height);
+                    g_danmakuBufferWidth = width;
+                    g_danmakuBufferHeight = height;
+                }
+
+                if (!g_danmakuMemBitmap)
+                {
+                    EndPaint(hwnd, &ps);
+                    return 0;
+                }
+
+                HBITMAP oldBitmap = (HBITMAP)SelectObject(g_danmakuMemDC, g_danmakuMemBitmap);
                 
                 // 在内存DC上绘制
                 static bool loggedEmptyOnce = false;
                 if (g_danmakuWords.empty())
                 {
                     if (!loggedEmptyOnce) { AppendLog("[弹幕绘制] 弹幕列表为空"); loggedEmptyOnce = true; }
+                    g_danmakuBounds.clear();
+                    g_danmakuHoverIndex = -1;
                     
                     // 设置字体
-                    if (g_danmakuFont) SelectObject(memDC, g_danmakuFont);
+                    if (g_danmakuFont) SelectObject(g_danmakuMemDC, g_danmakuFont);
                     
                     // 绘制红色单词
-                    SetBkMode(memDC, TRANSPARENT);
-                    SetTextColor(memDC, RGB(255, 0, 0)); // 红色文字
+                    SetBkMode(g_danmakuMemDC, TRANSPARENT);
+                    SetTextColor(g_danmakuMemDC, RGB(255, 0, 0)); // 红色文字
                     
                     // 显示一些测试单词
-                    TextOutW(memDC, 50, 50, L"弹幕数据为空", 6);
-                    TextOutW(memDC, 50, 100, L"请检查弹幕初始化", 8);
+                    TextOutW(g_danmakuMemDC, 50, 50, L"弹幕数据为空", 6);
+                    TextOutW(g_danmakuMemDC, 50, 100, L"请检查弹幕初始化", 8);
                     std::wstring handleText = L"窗口句柄: " + std::to_wstring((long long)g_danmakuHwnd);
-                    TextOutW(memDC, 50, 150, handleText.c_str(), (int)handleText.length());
+                    TextOutW(g_danmakuMemDC, 50, 150, handleText.c_str(), (int)handleText.length());
                 }
                 else
                 {
                     loggedEmptyOnce = false;
+                    g_danmakuBounds.resize(g_danmakuWords.size());
                     // 填充黑色背景，避免底层内容残留
                     HBRUSH bg = (HBRUSH)GetStockObject(BLACK_BRUSH);
-                    FillRect(memDC, &clientRect, bg);
-                    SetBkMode(memDC, OPAQUE);
-                    SetBkColor(memDC, RGB(0, 0, 0));
+                    FillRect(g_danmakuMemDC, &clientRect, bg);
+                    SetBkMode(g_danmakuMemDC, TRANSPARENT);
                     
                     // 绘制每个弹幕
                     for (size_t i = 0; i < g_danmakuWords.size(); ++i)
@@ -1554,56 +1682,80 @@ namespace WordReminder
                         // 计算透明度（淡入效果）- 减少更新频率
                         if (g_danmakuOpacities[i] < 1.0f)
                         {
-                            g_danmakuOpacities[i] += 0.02f; // 减少透明度变化速度
+                            g_danmakuOpacities[i] += g_danmakuLastDelta * 0.6f; // 根据帧间隔渐变
                             if (g_danmakuOpacities[i] > 1.0f) g_danmakuOpacities[i] = 1.0f;
                         }
                         
                         // 设置字体
-                        if (g_danmakuFont) SelectObject(memDC, g_danmakuFont);
+                        if (g_danmakuFont) SelectObject(g_danmakuMemDC, g_danmakuFont);
                         
-                        // 绘制文本
-                        SetTextColor(memDC, RGB(255, 255, 255)); // 白色文字
-                        TextOutW(memDC, (int)g_danmakuPositions[i], (int)g_danmakuYPositions[i], 
-                                 g_danmakuWords[i].c_str(), (int)g_danmakuWords[i].length());
+                        COLORREF textColor = (static_cast<int>(i) == g_danmakuHoverIndex) ? RGB(255, 215, 0) : RGB(255, 255, 255);
+                        SetTextColor(g_danmakuMemDC, textColor);
+                        int drawX = static_cast<int>(g_danmakuPositions[i]);
+                        int drawY = static_cast<int>(g_danmakuYPositions[i]);
+                        TextOutW(g_danmakuMemDC, drawX, drawY,
+                                 g_danmakuWords[i].c_str(), static_cast<int>(g_danmakuWords[i].length()));
+
+                        SIZE textSize{};
+                        GetTextExtentPoint32W(g_danmakuMemDC, g_danmakuWords[i].c_str(),
+                                              static_cast<int>(g_danmakuWords[i].length()), &textSize);
+                        if (i < g_danmakuBounds.size())
+                        {
+                            g_danmakuBounds[i] = RECT{ drawX, drawY, drawX + textSize.cx, drawY + textSize.cy };
+                        }
                     }
                 }
                 
                 // 将内存DC的内容复制到屏幕
-                BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
+                BitBlt(hdc, 0, 0, width, height, g_danmakuMemDC, 0, 0, SRCCOPY);
                 
                 // 清理资源
-                SelectObject(memDC, oldBitmap);
-                DeleteObject(memBitmap);
-                DeleteDC(memDC);
+                SelectObject(g_danmakuMemDC, oldBitmap);
                 
                 EndPaint(hwnd, &ps);
                 return 0;
             }
             case WM_DESTROY:
             {
+                KillTimer(hwnd, 1);
                 if (g_danmakuFont) { DeleteObject(g_danmakuFont); g_danmakuFont = nullptr; }
                 if (g_danmakuBrush) { DeleteObject(g_danmakuBrush); g_danmakuBrush = nullptr; }
                 if (g_danmakuPen) { DeleteObject(g_danmakuPen); g_danmakuPen = nullptr; }
+                if (g_danmakuMemBitmap) { DeleteObject(g_danmakuMemBitmap); g_danmakuMemBitmap = nullptr; }
+                if (g_danmakuMemDC) { DeleteDC(g_danmakuMemDC); g_danmakuMemDC = nullptr; }
+                g_danmakuBufferWidth = 0;
+                g_danmakuBufferHeight = 0;
                 return 0;
             }
             case WM_LBUTTONDOWN:
             {
-                // 开始拖动窗口
+                POINT clientPos{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                bool hitWord = false;
+                if (g_danmakuHoverIndex >= 0 &&
+                    g_danmakuHoverIndex < static_cast<int>(g_danmakuBounds.size()) &&
+                    PtInRect(&g_danmakuBounds[g_danmakuHoverIndex], clientPos))
+                {
+                    hitWord = true;
+                }
+
+                if (hitWord)
+                {
+                    g_danmakuMousePressed = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }
+
                 isDragging = true;
-                
-                // 获取当前鼠标屏幕坐标
+
                 POINT mousePos;
                 GetCursorPos(&mousePos);
-                
-                // 获取当前窗口位置
+
                 RECT windowRect;
                 GetWindowRect(hwnd, &windowRect);
-                
-                // 计算鼠标相对于窗口的偏移
+
                 dragStart.x = mousePos.x - windowRect.left;
                 dragStart.y = mousePos.y - windowRect.top;
-                
-                // 捕获鼠标
+
                 SetCapture(hwnd);
                 AppendLog("[弹幕] 开始拖动窗口");
                 return 0;
@@ -1612,25 +1764,71 @@ namespace WordReminder
             {
                 if (isDragging)
                 {
-                    // 获取当前鼠标屏幕坐标
                     POINT mousePos;
                     GetCursorPos(&mousePos);
-                    
-                    // 计算新位置（使用屏幕坐标，避免相对坐标的累积误差）
+
                     int newX = mousePos.x - dragStart.x;
                     int newY = mousePos.y - dragStart.y;
-                    
-                    // 移动窗口（使用SWP_NOACTIVATE避免窗口激活导致的闪烁）
-                    SetWindowPos(hwnd, nullptr, newX, newY, 0, 0, 
-                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+                    SetWindowPos(hwnd, nullptr, newX, newY, 0, 0,
+                                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    return 0;
                 }
+
+                POINT clientPos{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                int previousHover = g_danmakuHoverIndex;
+                int newHover = -1;
+                for (size_t i = 0; i < g_danmakuBounds.size(); ++i)
+                {
+                    if (PtInRect(&g_danmakuBounds[i], clientPos))
+                    {
+                        newHover = static_cast<int>(i);
+                        break;
+                    }
+                }
+
+                if (newHover != previousHover)
+                {
+                    g_danmakuHoverIndex = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    if (newHover >= 0)
+                    {
+                        TRACKMOUSEEVENT tme{};
+                        tme.cbSize = sizeof(tme);
+                        tme.dwFlags = TME_LEAVE;
+                        tme.hwndTrack = hwnd;
+                        TrackMouseEvent(&tme);
+                    }
+                }
+
+                SetCursor((g_danmakuHoverIndex >= 0) ? LoadCursor(nullptr, IDC_HAND)
+                                                     : LoadCursor(nullptr, IDC_ARROW));
+                return 0;
+            }
+            case WM_MOUSELEAVE:
+            {
+                g_danmakuHoverIndex = -1;
+                g_danmakuMousePressed = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                SetCursor(LoadCursor(nullptr, IDC_ARROW));
                 return 0;
             }
             case WM_LBUTTONUP:
             {
+                if (g_danmakuMousePressed)
+                {
+                    ReleaseCapture();
+                    g_danmakuMousePressed = false;
+                    int index = g_danmakuHoverIndex;
+                    if (index >= 0 && index < static_cast<int>(g_danmakuWords.size()))
+                    {
+                        CopyTextToClipboard(hwnd, g_danmakuWords[index]);
+                    }
+                    return 0;
+                }
+
                 if (isDragging)
                 {
-                    // 结束拖动
                     isDragging = false;
                     ReleaseCapture();
                     AppendLog("[弹幕] 结束拖动窗口");
@@ -1707,7 +1905,11 @@ namespace WordReminder
             g_danmakuYPositions.clear();
             g_danmakuOpacities.clear();
             g_danmakuSpeeds.clear();
+            g_danmakuBounds.clear();
             g_danmakuTimer = 0.0f;
+            g_danmakuHoverIndex = -1;
+            g_danmakuMousePressed = false;
+            g_danmakuFrameAccumulator = 0.0f;
             
             AppendLog("[弹幕] 弹幕窗口创建成功，窗口句柄: " + std::to_string((long long)g_danmakuHwnd));
             
@@ -1745,7 +1947,6 @@ namespace WordReminder
         if (!g_state->enableDanmaku) return;
         
         auto dueWords = GetDueWords();
-        bool hasDueWords = !dueWords.empty();
         
         // 如果没有需要复习的单词，使用单词列表中的单词
         if (dueWords.empty()) 
@@ -1781,6 +1982,12 @@ namespace WordReminder
         g_danmakuYPositions.clear();
         g_danmakuOpacities.clear();
         g_danmakuSpeeds.clear();
+        g_danmakuLastTick = std::chrono::steady_clock::now();
+        g_danmakuLastDelta = 0.016f;
+        g_danmakuFrameAccumulator = 0.0f;
+        g_danmakuBounds.clear();
+        g_danmakuHoverIndex = -1;
+        g_danmakuMousePressed = false;
         
         // 获取屏幕尺寸
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -1801,9 +2008,10 @@ namespace WordReminder
                 g_danmakuWords.push_back(Utils::Utf8ToWide(word.word + " - " + word.meaning));
                 // 从弹幕窗口右侧开始，适应新的窗口大小
                 g_danmakuPositions.push_back((float)(windowWidth - i * 30.0f)); // 从窗口右侧开始，错开位置
-                g_danmakuYPositions.push_back(20.0f + (rand() % (windowHeight - 60))); // 随机Y位置，确保在窗口内
+                g_danmakuYPositions.push_back(20.0f + (rand() % (std::max)(windowHeight - 60, 1))); // 随机Y位置，确保在窗口内
                 g_danmakuOpacities.push_back(0.0f);
-                g_danmakuSpeeds.push_back(2.0f + (rand() % 3));
+                g_danmakuSpeeds.push_back(40.0f);
+                g_danmakuBounds.emplace_back(RECT{0, 0, 0, 0});
                 
                 AppendLog("[弹幕] 添加弹幕 " + std::to_string(i) + ": " + word.word + 
                          ", 位置=(" + std::to_string(windowWidth - i * 30.0f) + 
