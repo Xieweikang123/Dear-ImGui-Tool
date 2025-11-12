@@ -407,18 +407,42 @@ namespace WordReminder
             g_danmakuBounds.emplace_back(RECT{0, 0, 0, 0});
         };
 
-        if (g_state && !g_state->words.empty())
+        if (g_state)
         {
-            int randomIndex = rand() % g_state->words.size();
-            const auto& word = g_state->words[randomIndex];
-            addEntry(Utils::Utf8ToWide(word.word + " - " + word.meaning));
-            AppendLog("[弹幕] 添加单词弹幕: " + word.word + " - " + word.meaning +
-                      ", 位置=(" + std::to_string(windowWidth) + ", " + std::to_string(g_danmakuYPositions.back()) + ")");
+            std::vector<int> eligibleIndices;
+            eligibleIndices.reserve(g_state->words.size());
+            for (int i = 0; i < static_cast<int>(g_state->words.size()); ++i)
+            {
+                const auto& entry = g_state->words[i];
+                if (entry.isActive && !entry.isMastered)
+                {
+                    eligibleIndices.push_back(i);
+                }
+            }
+
+            if (!eligibleIndices.empty())
+            {
+                int randomIndex = eligibleIndices[rand() % eligibleIndices.size()];
+                const auto& word = g_state->words[randomIndex];
+                addEntry(Utils::Utf8ToWide(word.word + " - " + word.meaning));
+                AppendLog("[弹幕] 添加单词弹幕: " + word.word + " - " + word.meaning +
+                          ", 位置=(" + std::to_string(windowWidth) + ", " + std::to_string(g_danmakuYPositions.back()) + ")");
+            }
+            else if (!g_state->words.empty())
+            {
+                addEntry(L"🎉 当前所有单词都已掌握或暂停提醒");
+                AppendLog("[弹幕] 添加提示弹幕: 所有单词已掌握或未激活");
+            }
+            else
+            {
+                addEntry(L"请添加单词到列表中");
+                AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中");
+            }
         }
         else
         {
             addEntry(L"请添加单词到列表中");
-            AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中");
+            AppendLog("[弹幕] 添加提示弹幕: 请添加单词到列表中 (无状态)");
         }
     }
 
@@ -1951,17 +1975,34 @@ namespace WordReminder
         // 如果没有需要复习的单词，使用单词列表中的单词
         if (dueWords.empty()) 
         {
-            AppendLog("[弹幕测试] 没有待复习单词，使用单词列表中的单词");
+            AppendLog("[弹幕测试] 没有待复习单词，尝试使用未掌握的单词");
             AppendLog("[弹幕测试] 单词列表大小: " + std::to_string(g_state->words.size()));
-            // 从单词列表中获取单词用于弹幕
-            if (!g_state->words.empty())
+            if (g_state && !g_state->words.empty())
             {
-                // 随机选择3个单词作为初始弹幕
-                for (size_t i = 0; i < (std::min)(g_state->words.size(), size_t(3)); ++i)
+                std::vector<int> eligibleIndices;
+                eligibleIndices.reserve(g_state->words.size());
+                for (int i = 0; i < static_cast<int>(g_state->words.size()); ++i)
                 {
-                    int randomIndex = rand() % g_state->words.size();
-                    dueWords.push_back(g_state->words[randomIndex]);
-                    AppendLog("[弹幕测试] 添加单词: " + g_state->words[randomIndex].word);
+                    const auto& entry = g_state->words[i];
+                    if (entry.isActive && !entry.isMastered)
+                    {
+                        eligibleIndices.push_back(i);
+                    }
+                }
+
+                if (!eligibleIndices.empty())
+                {
+                    size_t initialCount = std::min<size_t>(eligibleIndices.size(), 3);
+                    for (size_t i = 0; i < initialCount; ++i)
+                    {
+                        int randomIndex = eligibleIndices[rand() % eligibleIndices.size()];
+                        dueWords.push_back(g_state->words[randomIndex]);
+                        AppendLog("[弹幕测试] 添加单词: " + g_state->words[randomIndex].word);
+                    }
+                }
+                else
+                {
+                    AppendLog("[弹幕测试] 所有单词已掌握或暂停提醒，不再添加弹幕单词");
                 }
             }
             else
