@@ -22,9 +22,11 @@
 #include <shellscalingapi.h>
 #include <dwmapi.h>
 #include <commdlg.h>
+#include <winhttp.h>
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "Shcore.lib")
 #pragma comment(lib, "Comdlg32.lib")
+#pragma comment(lib, "Winhttp.lib")
 #endif
 #include <algorithm>
 
@@ -67,6 +69,8 @@ namespace WordReminder
         bool enableDanmaku = false; // 弹幕提醒开关
         int defaultReminderSeconds = 5; // 默认5秒（用于测试）
         float danmakuIntervalSec = 3.0f; // 弹幕出词间隔（秒）
+        bool aiGenerating = false;
+        char aiStatus[256] = "";
         
         // 统计
         int totalWords = 0;
@@ -513,6 +517,153 @@ namespace WordReminder
         UINT dx = 96, dy = 96;
         GetDpiForMonitor(hMon, MDT_EFFECTIVE_DPI, &dx, &dy);
         return (float)dx / 96.0f;
+    }
+#endif
+
+#ifdef _WIN32
+    static std::string CallOllamaChat(const std::string& userContent)
+    {
+        const wchar_t* host = L"121.129.32.42";
+        INTERNET_PORT port = 11434;
+        const wchar_t* path = L"/v1/chat/completions";
+
+        HINTERNET hSession = WinHttpOpen(L"Dear-ImGui-Tool/1.0",
+                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                         WINHTTP_NO_PROXY_NAME,
+                                         WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession)
+        {
+            AppendLog("[Ollama] WinHttpOpen failed");
+            return std::string();
+        }
+
+        DWORD timeout = 5000; // 5s connect/send/receive timeout
+        WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
+
+        HINTERNET hConnect = WinHttpConnect(hSession, host, port, 0);
+        if (!hConnect)
+        {
+            AppendLog("[Ollama] WinHttpConnect failed");
+            WinHttpCloseHandle(hSession);
+            return std::string();
+        }
+
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect,
+                                               L"POST",
+                                               path,
+                                               NULL,
+                                               WINHTTP_NO_REFERER,
+                                               WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                               0);
+        if (!hRequest)
+        {
+            AppendLog("[Ollama] WinHttpOpenRequest failed");
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return std::string();
+        }
+
+        std::string jsonBody;
+        jsonBody.reserve(512 + userContent.size());
+        jsonBody = "{\"model\":\"gpt-oss:20b\",\"messages\":[";
+        jsonBody += "{\"role\":\"system\",\"content\":\"You are a helpful English-Chinese word explanation assistant. Reply in Chinese.\"},";
+        jsonBody += "{\"role\":\"user\",\"content\":\"";
+        for (char c : userContent)
+        {
+            if (c == '\\') jsonBody += "\\\\";
+            else if (c == '"') jsonBody += "\\\"";
+            else if (c == '\n') jsonBody += "\\n";
+            else jsonBody.push_back(c);
+        }
+        jsonBody += "\"}],\"temperature\":0.7}";
+
+        std::wstring headers = L"Content-Type: application/json\r\n";
+        BOOL bResults = WinHttpSendRequest(hRequest,
+                                           headers.c_str(),
+                                           (DWORD)headers.size(),
+                                           (LPVOID)jsonBody.data(),
+                                           (DWORD)jsonBody.size(),
+                                           (DWORD)jsonBody.size(),
+                                           0);
+        if (!bResults)
+        {
+            AppendLog("[Ollama] WinHttpSendRequest failed");
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return std::string();
+        }
+
+        bResults = WinHttpReceiveResponse(hRequest, NULL);
+        if (!bResults)
+        {
+            AppendLog("[Ollama] WinHttpReceiveResponse failed");
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return std::string();
+        }
+
+        std::string response;
+        DWORD dwSize = 0;
+        do
+        {
+            dwSize = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0)
+                break;
+
+            std::string buffer;
+            buffer.resize(dwSize);
+            DWORD dwDownloaded = 0;
+            if (!WinHttpReadData(hRequest, &buffer[0], dwSize, &dwDownloaded) || dwDownloaded == 0)
+                break;
+            buffer.resize(dwDownloaded);
+            response.append(buffer);
+        } while (dwSize > 0);
+
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+
+        const std::string key = "\"content\":";
+        size_t pos = response.find(key);
+        if (pos == std::string::npos)
+        {
+            AppendLog("[Ollama] no content field in response");
+            return std::string();
+        }
+        pos += key.size();
+        while (pos < response.size() && (response[pos] == ' ' || response[pos] == '\n'))
+            ++pos;
+        if (pos >= response.size() || response[pos] != '"')
+        {
+            AppendLog("[Ollama] content field malformed");
+            return std::string();
+        }
+        ++pos;
+        std::string content;
+        while (pos < response.size())
+        {
+            char c = response[pos++];
+            if (c == '\\')
+            {
+                if (pos >= response.size()) break;
+                char esc = response[pos++];
+                if (esc == 'n') content.push_back('\n');
+                else if (esc == 't') content.push_back('\t');
+                else content.push_back(esc);
+            }
+            else if (c == '"')
+            {
+                break;
+            }
+            else
+            {
+                content.push_back(c);
+            }
+        }
+
+        return content;
     }
 #endif
 
@@ -2324,7 +2475,58 @@ namespace WordReminder
             ImGui::Text("释义:");
             ImGui::SameLine();
             ImGui::InputTextMultiline("##Meaning", g_state->newMeaning, sizeof(g_state->newMeaning), ImVec2(-1, 80.0f * uiScale));
-            
+#ifdef _WIN32
+            ImGui::Spacing();
+            if (!g_state->aiGenerating)
+            {
+                if (ImGui::Button("AI 生成释义"))
+                {
+                    if (strlen(g_state->newWord) > 0)
+                    {
+                        g_state->aiGenerating = true;
+                        strncpy(g_state->aiStatus, "正在向 AI 请求释义...", sizeof(g_state->aiStatus) - 1);
+                        g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
+
+                        std::string word = g_state->newWord;
+                        std::thread([](std::string w)
+                        {
+                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句：") + w;
+                            std::string result = CallOllamaChat(prompt);
+
+                            if (!g_state)
+                                return;
+
+                            if (!result.empty())
+                            {
+                                strncpy(g_state->newMeaning, result.c_str(), sizeof(g_state->newMeaning) - 1);
+                                g_state->newMeaning[sizeof(g_state->newMeaning) - 1] = '\0';
+                                strncpy(g_state->aiStatus, "AI 释义生成完成", sizeof(g_state->aiStatus) - 1);
+                                g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
+                            }
+                            else
+                            {
+                                strncpy(g_state->aiStatus, "AI 请求失败或超时", sizeof(g_state->aiStatus) - 1);
+                                g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
+                            }
+                            g_state->aiGenerating = false;
+                        }, word).detach();
+                    }
+                }
+            }
+            else
+            {
+                ImGui::BeginDisabled();
+                ImGui::Button("AI 生成释义");
+                ImGui::EndDisabled();
+            }
+
+            if (g_state->aiStatus[0] != '\0')
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", g_state->aiStatus);
+            }
+#endif
+
                          ImGui::NextColumn();
              
             // 提醒时间设置区域（预设 + 自定义分钟）
