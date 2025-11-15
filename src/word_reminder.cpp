@@ -739,7 +739,7 @@ namespace WordReminder
 
         std::thread([entryIndex, word, host, port, path, model]()
         {
-            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + word;
+            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句(例句是纯英文版，不要翻译成中文)，不要使用 Markdown 或任何格式符号：") + word;
             std::string result = CallOllamaChat(host, port, path, model, prompt);
 
             if (!g_state) return;
@@ -2566,14 +2566,25 @@ namespace WordReminder
             
             ImGui::Columns(2, "add_word");
             ImGui::SetColumnWidth(0, 220.0f * uiScale);
-            
+
+            // 左侧：单词 + 提醒时间
             ImGui::Text("单词:");
             ImGui::SameLine();
             ImGui::InputText("##Word", g_state->newWord, sizeof(g_state->newWord));
-            
-            // 已移除音标输入
-            ImGui::NextColumn();
-            
+
+            ImGui::Spacing();
+            ImGui::Text("提醒时间(分钟):");
+            static int minutesOnly = 30;
+            if (ImGui::IsWindowAppearing())
+            {
+                minutesOnly = (std::max)(1, g_state->reminderSeconds / 60);
+            }
+            if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
+            {
+                g_state->reminderSeconds = minutesOnly * 60;
+            }
+
+            // 右侧：释义 + AI
             ImGui::NextColumn();
             ImGui::Text("释义:");
             ImGui::SameLine();
@@ -2635,19 +2646,6 @@ namespace WordReminder
             }
 #endif
 
-                         ImGui::NextColumn();
-             
-            // 提醒时间设置区域（仅滑块）
-            ImGui::Text("提醒时间(分钟):");
-            static int minutesOnly = 30;
-            if (ImGui::IsWindowAppearing())
-            {
-                minutesOnly = (std::max)(1, g_state->reminderSeconds / 60);
-            }
-            if (ImGui::SliderInt("##MinutesOnly", &minutesOnly, 1, 240, "%d 分钟"))
-            {
-                g_state->reminderSeconds = minutesOnly * 60;
-            }
             ImGui::Columns(1);
             
             
