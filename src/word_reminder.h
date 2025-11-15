@@ -17,8 +17,10 @@ namespace WordReminder
         bool isMastered;  // 新增：是否已掌握
         int reviewCount;
         std::chrono::system_clock::time_point lastReview;
+        bool uiAiGenerating;
+        std::string uiAiStatus;
         
-        WordEntry() : isActive(true), isMastered(false), reviewCount(0) {}
+        WordEntry() : isActive(true), isMastered(false), reviewCount(0), uiAiGenerating(false) {}
     };
     
     // 初始化功能模块

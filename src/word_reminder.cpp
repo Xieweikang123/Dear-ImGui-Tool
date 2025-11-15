@@ -71,6 +71,10 @@ namespace WordReminder
         float danmakuIntervalSec = 3.0f; // 弹幕出词间隔（秒）
         bool aiGenerating = false;
         char aiStatus[256] = "";
+        char ollamaHost[128] = "121.129.32.42";
+        int ollamaPort = 11434;
+        char ollamaPath[128] = "/v1/chat/completions";
+        char ollamaModel[64] = "gpt-oss:20b";
         
         // 统计
         int totalWords = 0;
@@ -521,11 +525,29 @@ namespace WordReminder
 #endif
 
 #ifdef _WIN32
-    static std::string CallOllamaChat(const std::string& userContent)
+    static std::wstring Utf8ToWide(const std::string& utf8)
     {
-        const wchar_t* host = L"121.129.32.42";
-        INTERNET_PORT port = 11434;
-        const wchar_t* path = L"/v1/chat/completions";
+        if (utf8.empty()) return std::wstring();
+        int count = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+        if (count <= 0) return std::wstring();
+        std::wstring wide;
+        wide.resize(count - 1);
+        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), count);
+        return wide;
+    }
+
+    static std::string CallOllamaChat(const std::string& hostUtf8,
+                                      int port,
+                                      const std::string& pathUtf8,
+                                      const std::string& modelName,
+                                      const std::string& userContent)
+    {
+        std::wstring host = Utf8ToWide(hostUtf8.empty() ? "121.129.32.42" : hostUtf8);
+        std::wstring path = Utf8ToWide(pathUtf8.empty() ? "/v1/chat/completions" : pathUtf8);
+        if (host.empty()) host = L"121.129.32.42";
+        if (path.empty()) path = L"/v1/chat/completions";
+        if (port <= 0) port = 11434;
+        std::string model = modelName.empty() ? "gpt-oss:20b" : modelName;
 
         HINTERNET hSession = WinHttpOpen(L"Dear-ImGui-Tool/1.0",
                                          WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -540,7 +562,7 @@ namespace WordReminder
         DWORD timeout = 5000; // 5s connect/send/receive timeout
         WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
 
-        HINTERNET hConnect = WinHttpConnect(hSession, host, port, 0);
+        HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), static_cast<INTERNET_PORT>(port), 0);
         if (!hConnect)
         {
             AppendLog("[Ollama] WinHttpConnect failed");
@@ -550,7 +572,7 @@ namespace WordReminder
 
         HINTERNET hRequest = WinHttpOpenRequest(hConnect,
                                                L"POST",
-                                               path,
+                                               path.c_str(),
                                                NULL,
                                                WINHTTP_NO_REFERER,
                                                WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -565,7 +587,7 @@ namespace WordReminder
 
         std::string jsonBody;
         jsonBody.reserve(512 + userContent.size());
-        jsonBody = "{\"model\":\"gpt-oss:20b\",\"messages\":[";
+        jsonBody = "{\"model\":\"" + model + "\",\"messages\":[";
         jsonBody += "{\"role\":\"system\",\"content\":\"You are a helpful English-Chinese word explanation assistant. Reply in Chinese only, and DO NOT use markdown or any formatting symbols. Output plain text only.\"},";
         jsonBody += "{\"role\":\"user\",\"content\":\"";
         for (char c : userContent)
@@ -664,6 +686,78 @@ namespace WordReminder
         }
 
         return content;
+    }
+
+    static std::string CleanAiText(const std::string& result)
+    {
+        std::string cleaned;
+        cleaned.reserve(result.size());
+        bool atLineStart = true;
+        for (size_t i = 0; i < result.size(); ++i)
+        {
+            char c = result[i];
+            if (atLineStart)
+            {
+                if (c == ' ' || c == '\t')
+                    continue;
+                if (c == '-' && i + 1 < result.size() && result[i + 1] == ' ')
+                {
+                    ++i;
+                    continue;
+                }
+                if (c == '*' || c == '#')
+                    continue;
+            }
+            if (c == '*')
+                continue;
+            cleaned.push_back(c);
+            atLineStart = (c == '\n' || c == '\r');
+        }
+        return cleaned;
+    }
+
+    static void RequestAiExplanationForEntry(int entryIndex)
+    {
+        if (!g_state) return;
+        if (entryIndex < 0 || entryIndex >= static_cast<int>(g_state->words.size())) return;
+        auto& entry = g_state->words[entryIndex];
+        if (entry.word.empty())
+        {
+            entry.uiAiStatus = "单词为空";
+            return;
+        }
+        if (entry.uiAiGenerating) return;
+
+        entry.uiAiGenerating = true;
+        entry.uiAiStatus = "AI 正在生成释义...";
+
+        std::string word = entry.word;
+        std::string host = g_state->ollamaHost;
+        int port = g_state->ollamaPort;
+        std::string path = g_state->ollamaPath;
+        std::string model = g_state->ollamaModel;
+
+        std::thread([entryIndex, word, host, port, path, model]()
+        {
+            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + word;
+            std::string result = CallOllamaChat(host, port, path, model, prompt);
+
+            if (!g_state) return;
+            if (entryIndex < 0 || entryIndex >= static_cast<int>(g_state->words.size())) return;
+
+            auto& entry = g_state->words[entryIndex];
+            if (!result.empty())
+            {
+                entry.meaning = CleanAiText(result);
+                entry.uiAiStatus = "AI 释义生成完成";
+                SaveWords();
+            }
+            else
+            {
+                entry.uiAiStatus = "AI 请求失败或超时";
+            }
+            entry.uiAiGenerating = false;
+        }).detach();
     }
 #endif
 
@@ -2454,12 +2548,21 @@ namespace WordReminder
             }
         }
         
+        bool requestOllamaPopup = false;
+
         // 添加新单词区域
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("➕ 添加新单词", ImGuiTreeNodeFlags_DefaultOpen))
         {
             const float uiScale = ImGui::GetFontSize() / 16.0f;
             ImGui::BeginChild("AddWord", ImVec2(0, 200.0f * uiScale), false);
+            ImGui::SameLine(0.0f, 8.0f * uiScale);
+#ifdef _WIN32
+            if (ImGui::SmallButton("配置AI"))
+            {
+                requestOllamaPopup = true;
+            }
+#endif
             
             ImGui::Columns(2, "add_word");
             ImGui::SetColumnWidth(0, 220.0f * uiScale);
@@ -2488,40 +2591,21 @@ namespace WordReminder
                         g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
 
                         std::string word = g_state->newWord;
-                        std::thread([](std::string w)
+                        std::string host = g_state->ollamaHost;
+                        int port = g_state->ollamaPort;
+                        std::string path = g_state->ollamaPath;
+                        std::string model = g_state->ollamaModel;
+                        std::thread([word, host, port, path, model]()
                         {
-                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + w;
-                            std::string result = CallOllamaChat(prompt);
+                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + word;
+                            std::string result = CallOllamaChat(host, port, path, model, prompt);
 
                             if (!g_state)
                                 return;
 
                             if (!result.empty())
                             {
-                                // 简单去除常见 Markdown 符号
-                                std::string cleaned;
-                                cleaned.reserve(result.size());
-                                bool atLineStart = true;
-                                for (size_t i = 0; i < result.size(); ++i)
-                                {
-                                    char c = result[i];
-                                    if (atLineStart)
-                                    {
-                                        if (c == ' ' || c == '\t')
-                                            continue;
-                                        if (c == '-' && i + 1 < result.size() && result[i + 1] == ' ')
-                                        {
-                                            ++i; // skip '-' and following space
-                                            continue;
-                                        }
-                                        if (c == '*' || c == '#')
-                                            continue;
-                                    }
-                                    if (c == '*')
-                                        continue;
-                                    cleaned.push_back(c);
-                                    atLineStart = (c == '\n' || c == '\r');
-                                }
+                                std::string cleaned = CleanAiText(result);
 
                                 strncpy(g_state->newMeaning, cleaned.c_str(), sizeof(g_state->newMeaning) - 1);
                                 g_state->newMeaning[sizeof(g_state->newMeaning) - 1] = '\0';
@@ -2534,7 +2618,7 @@ namespace WordReminder
                                 g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
                             }
                             g_state->aiGenerating = false;
-                        }, word).detach();
+                        }).detach();
                     }
                 }
             }
@@ -2553,37 +2637,8 @@ namespace WordReminder
 
                          ImGui::NextColumn();
              
-            // 提醒时间设置区域（预设 + 自定义分钟）
-            ImGui::Text("提醒时间:");
-            ImGui::SameLine();
-            
-            // 预设按钮（按 DPI/字号缩放）
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f * uiScale, 6.0f * uiScale));
-            const char* presets[] = {"5秒","30秒","1分钟","5分钟","10分钟","15分钟","30分钟","1小时","2小时","4小时"};
-            int presetSeconds[] = {5,30,60,300,600,900,1800,3600,7200,14400};
-            for (int i = 0; i < 10; ++i)
-            {
-                if (i > 0) ImGui::SameLine();
-                bool isSelected = (g_state->reminderSeconds == presetSeconds[i]);
-                if (isSelected)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 1.0f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 1.0f, 1.0f));
-                }
-                if (ImGui::Button(presets[i], ImVec2(72.0f * uiScale, 28.0f * uiScale)))
-                {
-                    g_state->reminderSeconds = presetSeconds[i];
-                }
-                if (isSelected)
-                {
-                    ImGui::PopStyleColor();
-                    ImGui::PopStyleColor();
-                }
-            }
-            ImGui::PopStyleVar();
-            
-            ImGui::Spacing();
-            ImGui::Text("自定义时间(分钟):");
+            // 提醒时间设置区域（仅滑块）
+            ImGui::Text("提醒时间(分钟):");
             static int minutesOnly = 30;
             if (ImGui::IsWindowAppearing())
             {
@@ -2612,7 +2667,37 @@ namespace WordReminder
             // Ensure child region is properly closed
             ImGui::EndChild();
         }
-        
+
+#ifdef _WIN32
+        if (requestOllamaPopup)
+        {
+            ImGui::OpenPopup("OllamaConfigPopup");
+        }
+        ImGui::SetNextWindowSize(ImVec2(420, 260), ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("OllamaConfigPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::TextWrapped("配置 Ollama/OpenAI 兼容接口，方便切换不同机器或模型。");
+            ImGui::Separator();
+            ImGui::InputText("主机", g_state->ollamaHost, sizeof(g_state->ollamaHost));
+            ImGui::InputInt("端口", &g_state->ollamaPort);
+            if (g_state->ollamaPort <= 0) g_state->ollamaPort = 11434;
+            ImGui::InputText("路径", g_state->ollamaPath, sizeof(g_state->ollamaPath));
+            ImGui::InputText("模型", g_state->ollamaModel, sizeof(g_state->ollamaModel));
+            ImGui::TextDisabled("例如: host=121.129.32.42, 路径=/v1/chat/completions, 模型=gpt-oss:20b");
+            ImGui::Spacing();
+            if (ImGui::Button("关闭", ImVec2(120, 0)))
+            {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("完成", ImVec2(120, 0)))
+            {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+#endif
+
         // 单词列表区域
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("📚 单词列表", ImGuiTreeNodeFlags_DefaultOpen))
@@ -2756,6 +2841,28 @@ namespace WordReminder
                             MarkAsReviewed(i);
                         }
                     }
+
+#ifdef _WIN32
+                    ImGui::SameLine();
+                    if (!entry.uiAiGenerating)
+                    {
+                        if (ImGui::Button("AI 解释"))
+                        {
+                            RequestAiExplanationForEntry(i);
+                        }
+                    }
+                    else
+                    {
+                        ImGui::BeginDisabled();
+                        ImGui::Button("AI 解释");
+                        ImGui::EndDisabled();
+                    }
+                    if (!entry.uiAiStatus.empty())
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%s", entry.uiAiStatus.c_str());
+                    }
+#endif
                     
                     // 掌握状态按钮
                     if (entry.isMastered)
