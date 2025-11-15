@@ -566,7 +566,7 @@ namespace WordReminder
         std::string jsonBody;
         jsonBody.reserve(512 + userContent.size());
         jsonBody = "{\"model\":\"gpt-oss:20b\",\"messages\":[";
-        jsonBody += "{\"role\":\"system\",\"content\":\"You are a helpful English-Chinese word explanation assistant. Reply in Chinese.\"},";
+        jsonBody += "{\"role\":\"system\",\"content\":\"You are a helpful English-Chinese word explanation assistant. Reply in Chinese only, and DO NOT use markdown or any formatting symbols. Output plain text only.\"},";
         jsonBody += "{\"role\":\"user\",\"content\":\"";
         for (char c : userContent)
         {
@@ -2462,7 +2462,7 @@ namespace WordReminder
             ImGui::BeginChild("AddWord", ImVec2(0, 200.0f * uiScale), false);
             
             ImGui::Columns(2, "add_word");
-            ImGui::SetColumnWidth(0, 150.0f * uiScale);
+            ImGui::SetColumnWidth(0, 220.0f * uiScale);
             
             ImGui::Text("单词:");
             ImGui::SameLine();
@@ -2490,7 +2490,7 @@ namespace WordReminder
                         std::string word = g_state->newWord;
                         std::thread([](std::string w)
                         {
-                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句：") + w;
+                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + w;
                             std::string result = CallOllamaChat(prompt);
 
                             if (!g_state)
@@ -2498,7 +2498,32 @@ namespace WordReminder
 
                             if (!result.empty())
                             {
-                                strncpy(g_state->newMeaning, result.c_str(), sizeof(g_state->newMeaning) - 1);
+                                // 简单去除常见 Markdown 符号
+                                std::string cleaned;
+                                cleaned.reserve(result.size());
+                                bool atLineStart = true;
+                                for (size_t i = 0; i < result.size(); ++i)
+                                {
+                                    char c = result[i];
+                                    if (atLineStart)
+                                    {
+                                        if (c == ' ' || c == '\t')
+                                            continue;
+                                        if (c == '-' && i + 1 < result.size() && result[i + 1] == ' ')
+                                        {
+                                            ++i; // skip '-' and following space
+                                            continue;
+                                        }
+                                        if (c == '*' || c == '#')
+                                            continue;
+                                    }
+                                    if (c == '*')
+                                        continue;
+                                    cleaned.push_back(c);
+                                    atLineStart = (c == '\n' || c == '\r');
+                                }
+
+                                strncpy(g_state->newMeaning, cleaned.c_str(), sizeof(g_state->newMeaning) - 1);
                                 g_state->newMeaning[sizeof(g_state->newMeaning) - 1] = '\0';
                                 strncpy(g_state->aiStatus, "AI 释义生成完成", sizeof(g_state->aiStatus) - 1);
                                 g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
@@ -2522,7 +2547,6 @@ namespace WordReminder
 
             if (g_state->aiStatus[0] != '\0')
             {
-                ImGui::SameLine();
                 ImGui::TextDisabled("%s", g_state->aiStatus);
             }
 #endif
