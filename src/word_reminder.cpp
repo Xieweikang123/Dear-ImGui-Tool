@@ -2957,10 +2957,16 @@ namespace WordReminder
 #ifdef _WIN32
         if (!g_state->storyGenerating && !g_state->generatedStory.empty())
         {
-            ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
-            if (ImGui::Begin("📖 AI 生成的故事", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSizeConstraints(ImVec2(800, 400), ImVec2(FLT_MAX, FLT_MAX));
+            if (ImGui::Begin("📖 AI 生成的故事", nullptr, ImGuiWindowFlags_None))
             {
+                // 使用可滚动的文本区域显示故事
+                ImGui::BeginChild("StoryContent", ImVec2(0, -40), false, ImGuiWindowFlags_HorizontalScrollbar);
+                ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextWrapped("%s", g_state->generatedStory.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndChild();
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
