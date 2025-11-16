@@ -72,6 +72,9 @@ namespace WordReminder
         float danmakuIntervalSec = 3.0f; // 弹幕出词间隔（秒）
         bool aiGenerating = false;
         char aiStatus[256] = "";
+        // 故事生成状态
+        bool storyGenerating = false;
+        std::string generatedStory;
         char ollamaHost[128] = "121.129.32.42";
         int ollamaPort = 11434;
         char ollamaPath[128] = "/v1/chat/completions";
@@ -2507,6 +2510,66 @@ namespace WordReminder
         ImGui::Spacing();
         if (ImGui::CollapsingHeader("📚 单词列表", ImGuiTreeNodeFlags_DefaultOpen))
         {
+            // AI 故事生成按钮（在学习中的单词区域）
+            ImGui::Spacing();
+#ifdef _WIN32
+            // 获取所有学习中的单词（未掌握且激活的单词）
+            std::vector<std::string> learningWords;
+            for (const auto& entry : g_state->words)
+            {
+                if (entry.isActive && !entry.isMastered)
+                {
+                    learningWords.push_back(entry.word);
+                }
+            }
+            
+            if (!g_state->storyGenerating)
+            {
+                if (!learningWords.empty())
+                {
+                    if (ImGui::Button("📖 AI 生成复习故事", ImVec2(-1, 0)))
+                    {
+                        g_state->storyGenerating = true;
+                        g_state->generatedStory.clear();
+                        
+                        OllamaClient::GenerateStoryFromWordsAsync(learningWords, [](bool success, const std::string& story)
+                        {
+                            if (!g_state) return;
+                            
+                            if (success && !story.empty())
+                            {
+                                g_state->generatedStory = story;
+                            }
+                            else
+                            {
+                                g_state->generatedStory = "故事生成失败，请检查 AI 配置或网络连接。";
+                            }
+                            g_state->storyGenerating = false;
+                        });
+                    }
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::SetTooltip("使用学习中的单词生成一个连贯的故事，帮助记忆");
+                    }
+                }
+                else
+                {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("📖 AI 生成复习故事（无学习中的单词）", ImVec2(-1, 0));
+                    ImGui::EndDisabled();
+                }
+            }
+            else
+            {
+                ImGui::BeginDisabled();
+                ImGui::Button("AI 正在生成故事...", ImVec2(-1, 0));
+                ImGui::EndDisabled();
+            }
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+#endif
+            
             // 导入/导出按钮栏
 #ifdef _WIN32
             {
@@ -2889,6 +2952,31 @@ namespace WordReminder
             
             lastDanmakuCheckTime = danmakuNow;
         }
+        
+        // 故事生成弹窗
+#ifdef _WIN32
+        if (!g_state->storyGenerating && !g_state->generatedStory.empty())
+        {
+            ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("📖 AI 生成的故事", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                ImGui::TextWrapped("%s", g_state->generatedStory.c_str());
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("复制故事", ImVec2(120, 0)))
+                {
+                    ImGui::SetClipboardText(g_state->generatedStory.c_str());
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("关闭", ImVec2(120, 0)))
+                {
+                    g_state->generatedStory.clear();
+                }
+                ImGui::End();
+            }
+        }
+#endif
         
         ImGui::End();
     }
