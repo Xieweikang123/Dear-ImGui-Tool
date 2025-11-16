@@ -33,5 +33,9 @@ namespace WordReminder
         // UI工具函数
         void DrawCopyableText(const char* id, const std::string& text);
         void DrawCopyableMultiline(const char* id, const std::string& text);
+        
+        // 获取InputText中选中的文字（如果可能）
+        // 返回：如果有选中文字则返回，否则返回空字符串
+        std::string GetInputTextSelection(const char* id);
     }
 }

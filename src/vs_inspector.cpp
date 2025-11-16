@@ -630,7 +630,6 @@ namespace VSInspector
             {
                 NormalizeCursorPaths(cfg);
             }
-            AppendLog(std::string("[prefs] loaded JSON ") + std::to_string(g_savedConfigs.size()) + " config(s) from " + p.string());
         }
         return ok;
     }
@@ -1292,14 +1291,14 @@ namespace VSInspector
         DISPID dispidMainWindow = 0; OLECHAR* nameMainWindow = L"MainWindow";
         if (FAILED(pDisp->GetIDsOfNames(IID_NULL, &nameMainWindow, 1, LOCALE_USER_DEFAULT, &dispidMainWindow)))
         {
-            AppendLog("[vs] GetIDsOfNames(MainWindow) failed");
+            // AppendLog("[vs] GetIDsOfNames(MainWindow) failed");  // VS日志已禁用
             return false;
         }
         VARIANT resultMainWindow; VariantInit(&resultMainWindow);
         DISPPARAMS noArgs = {0};
         if (FAILED(pDisp->Invoke(dispidMainWindow, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultMainWindow, NULL, NULL)))
         {
-            AppendLog("[vs] Invoke(MainWindow) failed");
+            // AppendLog("[vs] Invoke(MainWindow) failed");  // VS日志已禁用
             return false;
         }
         bool ok = false;
@@ -1320,7 +1319,7 @@ namespace VSInspector
                         case VT_I8: hwndInt = (INT_PTR)v.llVal; break;
                         case VT_UI8: hwndInt = (INT_PTR)v.ullVal; break;
                         default:
-                            AppendLog(std::string("[vs] HWnd VARIANT vt=") + std::to_string((int)v.vt));
+                            // AppendLog(std::string("[vs] HWnd VARIANT vt=") + std::to_string((int)v.vt));  // VS日志已禁用
                             break;
                     }
                     if (hwndInt)
@@ -1328,7 +1327,7 @@ namespace VSInspector
                         GetWindowThreadProcessId((HWND)hwndInt, &pidOut);
                         if (pidOut != 0)
                         {
-                            AppendLog(std::string("[vs] DTE hwnd=") + std::to_string((long long)hwndInt) + std::string(" pid=") + std::to_string((unsigned long)pidOut));
+                            // AppendLog(std::string("[vs] DTE hwnd=") + std::to_string((long long)hwndInt) + std::string(" pid=") + std::to_string((unsigned long)pidOut));  // VS日志已禁用
                             return true;
                         }
                     }
@@ -1354,7 +1353,7 @@ namespace VSInspector
         }
         else
         {
-            AppendLog("[vs] MainWindow not a dispatch");
+            // AppendLog("[vs] MainWindow not a dispatch");  // VS日志已禁用
         }
         VariantClear(&resultMainWindow);
         return ok;
@@ -1433,7 +1432,7 @@ namespace VSInspector
                     if (ext == ".sln")
                     {
                         slnOut = e.path().string();
-                        AppendLog(std::string("[vs] Found nearby solution: ") + slnOut);
+                        // AppendLog(std::string("[vs] Found nearby solution: ") + slnOut);  // VS日志已禁用
                         return;
                     }
                 }
@@ -1442,7 +1441,7 @@ namespace VSInspector
             pdir = pdir.parent_path();
             depth++;
         }
-        if (slnOut.empty()) AppendLog(std::string("[vs] No .sln found near ") + startDir.string());
+        // if (slnOut.empty()) AppendLog(std::string("[vs] No .sln found near ") + startDir.string());  // VS日志已禁用
     }
 
 
@@ -1458,13 +1457,13 @@ namespace VSInspector
     // Step 2: 通过进程文件句柄枚举获取solution路径（需要管理员权限）
     static std::string TryGetSolutionFromProcessHandles(DWORD pid)
     {
-        AppendLog("[vs] TryGetSolutionFromProcessHandles: pid=" + std::to_string((unsigned long)pid));
+        // AppendLog("[vs] TryGetSolutionFromProcessHandles: pid=" + std::to_string((unsigned long)pid));  // VS日志已禁用
         
         // 需要管理员权限才能枚举其他进程的句柄
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!hProcess) 
         {
-            AppendLog("[vs] TryGetSolutionFromProcessHandles: OpenProcess failed - need admin privileges");
+            // AppendLog("[vs] TryGetSolutionFromProcessHandles: OpenProcess failed - need admin privileges");  // VS日志已禁用
             return "";
         }
         
@@ -1473,7 +1472,7 @@ namespace VSInspector
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
         if (!hNtdll)
         {
-            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get ntdll.dll");
+            // AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get ntdll.dll");  // VS日志已禁用
             CloseHandle(hProcess);
             return "";
         }
@@ -1482,7 +1481,7 @@ namespace VSInspector
             (PNtQuerySystemInformation)GetProcAddress(hNtdll, "NtQuerySystemInformation");
         if (!NtQuerySystemInformation)
         {
-            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get NtQuerySystemInformation");
+            // AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to get NtQuerySystemInformation");  // VS日志已禁用
             CloseHandle(hProcess);
             return "";
         }
@@ -1492,7 +1491,7 @@ namespace VSInspector
         PVOID buffer = VirtualAlloc(NULL, bufferSize, MEM_COMMIT, PAGE_READWRITE);
         if (!buffer)
         {
-            AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to allocate buffer");
+            // AppendLog("[vs] TryGetSolutionFromProcessHandles: Failed to allocate buffer");  // VS日志已禁用
             CloseHandle(hProcess);
             return "";
         }
@@ -1500,7 +1499,7 @@ namespace VSInspector
         NTSTATUS status = NtQuerySystemInformation(16, buffer, bufferSize, &bufferSize); // SystemHandleInformation
         if (status != 0)
         {
-            AppendLog("[vs] TryGetSolutionFromProcessHandles: NtQuerySystemInformation failed with status " + std::to_string(status));
+            // AppendLog("[vs] TryGetSolutionFromProcessHandles: NtQuerySystemInformation failed with status " + std::to_string(status));  // VS日志已禁用
             VirtualFree(buffer, 0, MEM_RELEASE);
             CloseHandle(hProcess);
             return "";
@@ -1545,7 +1544,7 @@ namespace VSInspector
                     filePath.find("Dear-ImGui-Tool") == std::string::npos &&
                     std::filesystem::exists(filePath))
                 {
-                    AppendLog("[vs] TryGetSolutionFromProcessHandles: Found solution handle: " + filePath);
+                    // AppendLog("[vs] TryGetSolutionFromProcessHandles: Found solution handle: " + filePath);  // VS日志已禁用
                     candidateSolutions.push_back(filePath);
                 }
             }
@@ -1559,29 +1558,29 @@ namespace VSInspector
         {
             if (candidateSolutions.size() == 1)
             {
-                AppendLog("[vs] TryGetSolutionFromProcessHandles: Single solution found: " + candidateSolutions[0]);
+                // AppendLog("[vs] TryGetSolutionFromProcessHandles: Single solution found: " + candidateSolutions[0]);  // VS日志已禁用
                 return candidateSolutions[0];
             }
             else
             {
-                AppendLog("[vs] TryGetSolutionFromProcessHandles: Multiple solutions found, using first: " + candidateSolutions[0]);
+                // AppendLog("[vs] TryGetSolutionFromProcessHandles: Multiple solutions found, using first: " + candidateSolutions[0]);  // VS日志已禁用
                 return candidateSolutions[0];
             }
         }
         
-        AppendLog("[vs] TryGetSolutionFromProcessHandles: No solution handles found");
+        // AppendLog("[vs] TryGetSolutionFromProcessHandles: No solution handles found");  // VS日志已禁用
         return "";
     }
     
     // Step 3: 解析进程命令行，支持.slnf文件
     static std::string TryGetSolutionFromCommandLine(DWORD pid)
     {
-        AppendLog("[vs] TryGetSolutionFromCommandLine: pid=" + std::to_string((unsigned long)pid));
+        // AppendLog("[vs] TryGetSolutionFromCommandLine: pid=" + std::to_string((unsigned long)pid));  // VS日志已禁用
         
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!hProcess) 
         {
-            AppendLog("[vs] TryGetSolutionFromCommandLine: OpenProcess failed");
+            // AppendLog("[vs] TryGetSolutionFromCommandLine: OpenProcess failed");  // VS日志已禁用
             return "";
         }
         
@@ -1632,7 +1631,7 @@ namespace VSInspector
         {
             std::wstring cmdLine(commandLine, commandLineLen);
             std::string cmdLineUtf8 = WideToUtf8(cmdLine);
-            AppendLog("[vs] Process command line: " + cmdLineUtf8);
+            // AppendLog("[vs] Process command line: " + cmdLineUtf8);  // VS日志已禁用
             
             // 查找.sln或.slnf文件路径
             size_t slnPos = cmdLineUtf8.find(".sln");
@@ -1648,7 +1647,7 @@ namespace VSInspector
                 std::string slnfPath = cmdLineUtf8.substr(pathStart, slnfPos + 5 - pathStart);
                 if (std::filesystem::exists(slnfPath))
                 {
-                    AppendLog("[vs] Found .slnf file: " + slnfPath);
+                    // AppendLog("[vs] Found .slnf file: " + slnfPath);  // VS日志已禁用
                     
                     // 解析.slnf文件，查找solution路径
                     std::ifstream file(slnfPath);
@@ -1667,7 +1666,7 @@ namespace VSInspector
                                     std::string slnPath = line.substr(start + 1, end - start - 1);
                                     if (std::filesystem::exists(slnPath))
                                     {
-                                        AppendLog("[vs] Resolved .slnf to solution: " + slnPath);
+                                        // AppendLog("[vs] Resolved .slnf to solution: " + slnPath);  // VS日志已禁用
                                         return slnPath;
                                     }
                                 }
@@ -1687,7 +1686,7 @@ namespace VSInspector
                 std::string slnPath = cmdLineUtf8.substr(pathStart, slnPos + 4 - pathStart);
                 if (std::filesystem::exists(slnPath))
                 {
-                    AppendLog("[vs] Found solution in command line: " + slnPath);
+                    // AppendLog("[vs] Found solution in command line: " + slnPath);  // VS日志已禁用
                     return slnPath;
                 }
             }
@@ -1701,7 +1700,7 @@ namespace VSInspector
     {
         if (activeDocPath.empty()) return "";
         
-        AppendLog("[vs] TryGetSolutionFromActiveDocument: searching from " + activeDocPath);
+        // AppendLog("[vs] TryGetSolutionFromActiveDocument: searching from " + activeDocPath);  // VS日志已禁用
         
         std::filesystem::path docPath(activeDocPath);
         std::filesystem::path currentDir = docPath.parent_path();
@@ -1719,7 +1718,7 @@ namespace VSInspector
                         std::string slnPath = entry.path().string();
                         if (slnPath.find("Dear-ImGui-Tool") == std::string::npos)
                         {
-                            AppendLog("[vs] Found solution near active document: " + slnPath);
+                            // AppendLog("[vs] Found solution near active document: " + slnPath);  // VS日志已禁用
                             return slnPath;
                         }
                     }
@@ -1727,14 +1726,14 @@ namespace VSInspector
             }
             catch (const std::exception& e)
             {
-                AppendLog("[vs] TryGetSolutionFromActiveDocument: Exception: " + std::string(e.what()));
+                // AppendLog("[vs] TryGetSolutionFromActiveDocument: Exception: " + std::string(e.what()));  // VS日志已禁用
             }
             
             currentDir = currentDir.parent_path();
             depth++;
         }
         
-        AppendLog("[vs] TryGetSolutionFromActiveDocument: No solution found");
+        // AppendLog("[vs] TryGetSolutionFromActiveDocument: No solution found");  // VS日志已禁用
         return "";
     }
 
@@ -1743,23 +1742,23 @@ namespace VSInspector
         slnOut.clear();
         DISPID dispidActiveDoc = 0; OLECHAR* nameActiveDoc = L"ActiveDocument";
         HRESULT hrNameAD = pDisp->GetIDsOfNames(IID_NULL, &nameActiveDoc, 1, LOCALE_USER_DEFAULT, &dispidActiveDoc);
-        if (FAILED(hrNameAD)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument) failed hr=") + std::to_string((long)hrNameAD)); return; }
+        // if (FAILED(hrNameAD)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument) failed hr=") + std::to_string((long)hrNameAD)); return; }  // VS日志已禁用
         VARIANT resultActiveDoc; VariantInit(&resultActiveDoc); DISPPARAMS noArgs = {0};
         HRESULT hrInvokeAD = pDisp->Invoke(dispidActiveDoc, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultActiveDoc, NULL, NULL);
-        if (FAILED(hrInvokeAD)) { AppendLog(std::string("[vs] Invoke(ActiveDocument) failed hr=") + std::to_string((long)hrInvokeAD)); return; }
-        AppendLog("[vs] ActiveDocument fetched");
-        if (resultActiveDoc.vt != VT_DISPATCH || !resultActiveDoc.pdispVal) { AppendLog("[vs] ActiveDocument is null"); VariantClear(&resultActiveDoc); return; }
+        // if (FAILED(hrInvokeAD)) { AppendLog(std::string("[vs] Invoke(ActiveDocument) failed hr=") + std::to_string((long)hrInvokeAD)); return; }  // VS日志已禁用
+        // AppendLog("[vs] ActiveDocument fetched");  // VS日志已禁用
+        // if (resultActiveDoc.vt != VT_DISPATCH || !resultActiveDoc.pdispVal) { AppendLog("[vs] ActiveDocument is null"); VariantClear(&resultActiveDoc); return; }  // VS日志已禁用
         IDispatch* pDoc = resultActiveDoc.pdispVal;
         DISPID dispidDocFullName = 0; OLECHAR* nameDocFullName = L"FullName";
         HRESULT hrNameDocFN = pDoc->GetIDsOfNames(IID_NULL, &nameDocFullName, 1, LOCALE_USER_DEFAULT, &dispidDocFullName);
-        if (FAILED(hrNameDocFN)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument.FullName) failed hr=") + std::to_string((long)hrNameDocFN)); VariantClear(&resultActiveDoc); return; }
+        // if (FAILED(hrNameDocFN)) { AppendLog(std::string("[vs] GetIDsOfNames(ActiveDocument.FullName) failed hr=") + std::to_string((long)hrNameDocFN)); VariantClear(&resultActiveDoc); return; }  // VS日志已禁用
         VARIANT resultDocFN; VariantInit(&resultDocFN);
         if (SUCCEEDED(pDoc->Invoke(dispidDocFullName, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &noArgs, &resultDocFN, NULL, NULL)))
         {
             if (resultDocFN.vt == VT_BSTR && resultDocFN.bstrVal)
             {
                 std::string docPath = WideToUtf8(resultDocFN.bstrVal);
-                AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" ActiveDocument: ") + docPath);
+                // AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" ActiveDocument: ") + docPath);  // VS日志已禁用
                 for (auto& inst : found) { if (inst.pid == pid) { inst.activeDocumentPath = docPath; } }
                 SearchSlnNearDocument(docPath, slnOut);
             }
@@ -1767,7 +1766,7 @@ namespace VSInspector
         }
         else
         {
-            AppendLog("[vs] Invoke(ActiveDocument.FullName) failed");
+            // AppendLog("[vs] Invoke(ActiveDocument.FullName) failed");  // VS日志已禁用
         }
         VariantClear(&resultActiveDoc);
     }
@@ -1779,7 +1778,7 @@ namespace VSInspector
         HRESULT hrGetObj = pRot->GetObject(pMoniker, &pUnk);
         if (FAILED(hrGetObj) || !pUnk) 
         { 
-            AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj)); 
+            // AppendLog(std::string("[vs] GetObject(moniker) failed hr=") + std::to_string((long)hrGetObj));   // VS日志已禁用
             return; 
         }
         
@@ -1788,7 +1787,7 @@ namespace VSInspector
         HRESULT hrQI = pUnk->QueryInterface(IID_IDispatch, (void**)&pDisp);
         if (FAILED(hrQI) || !pDisp) 
         { 
-            AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI)); 
+            // AppendLog(std::string("[vs] QueryInterface(IDispatch) failed hr=") + std::to_string((long)hrQI));   // VS日志已禁用
             pUnk->Release(); 
             return; 
         }
@@ -1800,11 +1799,11 @@ namespace VSInspector
             if (pidHint != 0) 
             {
                 pid = pidHint;
-                AppendLog(std::string("[vs] Using pidHint from ROT: ") + std::to_string((unsigned long)pid));
+                // AppendLog(std::string("[vs] Using pidHint from ROT: ") + std::to_string((unsigned long)pid));  // VS日志已禁用
             } 
             else 
             {
-                AppendLog("[vs] GetPidFromDTE failed and no pidHint"); 
+                // AppendLog("[vs] GetPidFromDTE failed and no pidHint");   // VS日志已禁用
                 pDisp->Release(); 
                 pUnk->Release(); 
                 return;
@@ -1814,7 +1813,7 @@ namespace VSInspector
         // 直接获取Solution.FullName，就像C#代码中的 dte.Solution.FullName
         std::string sln; 
         bool gotSln = TryGetSolutionFullName(pDisp, sln);
-        AppendLog(std::string("[vs] TryGetSolutionFullName result=") + (gotSln?"true":"false") + std::string(" sln=") + (sln.empty()?"<empty>":sln));
+        // AppendLog(std::string("[vs] TryGetSolutionFullName result=") + (gotSln?"true":"false") + std::string(" sln=") + (sln.empty()?"<empty>":sln));  // VS日志已禁用
         
         // 如果COM方法成功，直接使用结果
         if (!sln.empty())
@@ -1824,21 +1823,21 @@ namespace VSInspector
                 if (inst.pid == pid) 
                 { 
                     inst.solutionPath = sln; 
-                    AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via COM: ") + sln); 
+                    // AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via COM: ") + sln);   // VS日志已禁用
                 } 
             }
         }
         else
         {
             // COM接口失败，尝试备用方法
-            AppendLog("[vs] COM interface failed, trying alternative methods for pid=" + std::to_string((unsigned long)pid));
+            // AppendLog("[vs] COM interface failed, trying alternative methods for pid=" + std::to_string((unsigned long)pid));  // VS日志已禁用
             
             // Step 2: 尝试进程文件句柄枚举
             std::string handlePath = TryGetSolutionFromProcessHandles(pid);
             if (!handlePath.empty())
             {
                 sln = handlePath;
-                AppendLog("[vs] Found solution via process handles: " + sln);
+                // AppendLog("[vs] Found solution via process handles: " + sln);  // VS日志已禁用
             }
             else
             {
@@ -1847,7 +1846,7 @@ namespace VSInspector
                 if (!cmdLinePath.empty())
                 {
                     sln = cmdLinePath;
-                    AppendLog("[vs] Found solution via command line: " + sln);
+                    // AppendLog("[vs] Found solution via command line: " + sln);  // VS日志已禁用
                 }
                 else
                 {
@@ -1859,7 +1858,7 @@ namespace VSInspector
                         if (!docPath.empty())
                         {
                             sln = docPath;
-                            AppendLog("[vs] Found solution via active document search: " + sln);
+                            // AppendLog("[vs] Found solution via active document search: " + sln);  // VS日志已禁用
                         }
                     }
                 }
@@ -1873,13 +1872,13 @@ namespace VSInspector
                     if (inst.pid == pid) 
                     { 
                         inst.solutionPath = sln; 
-                        AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via backup method: ") + sln); 
+                        // AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" Set solutionPath via backup method: ") + sln);   // VS日志已禁用
                     } 
                 }
             }
             else
             {
-                AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" no solution resolved - VS may be in Open Folder mode"));
+                // AppendLog(std::string("[vs] pid ") + std::to_string((unsigned long)pid) + std::string(" no solution resolved - VS may be in Open Folder mode"));  // VS日志已禁用
             }
         }
         
@@ -1889,7 +1888,7 @@ namespace VSInspector
 
     void Refresh()
     {
-        AppendLog("[vs] RefreshVSInstances: begin");
+        // AppendLog("[vs] RefreshVSInstances: begin");  // VS日志已禁用
         
         // Update system resources
         float currentTime = ImGui::GetTime();
@@ -1943,7 +1942,7 @@ namespace VSInspector
                             inst.exePath.assign(buf, sz);
                         CloseHandle(hProc);
                     }
-                    AppendLog(std::string("[vs] found devenv.exe pid=") + std::to_string((unsigned long)inst.pid) + (inst.exePath.empty() ? std::string(" path=<unknown>") : std::string(" path=") + inst.exePath));
+                    // AppendLog(std::string("[vs] found devenv.exe pid=") + std::to_string((unsigned long)inst.pid) + (inst.exePath.empty() ? std::string(" path=<unknown>") : std::string(" path=") + inst.exePath));  // VS日志已禁用
                     found.push_back(inst);
                 }
                 else if (exeLower == std::string("cursor.exe"))
@@ -2014,14 +2013,14 @@ namespace VSInspector
             return TRUE;
         }, reinterpret_cast<LPARAM>(&pidToTitle));
 
-        AppendLog(std::string("[vs] Found ") + std::to_string(found.size()) + " VS processes before ROT processing");
+        // AppendLog(std::string("[vs] Found ") + std::to_string(found.size()) + " VS processes before ROT processing");  // VS日志已禁用
         for (auto& inst : found)
         {
             auto it = pidToTitle.find(inst.pid);
             if (it != pidToTitle.end()) inst.windowTitle = it->second;
-            AppendLog(std::string("[vs] VS process: pid=") + std::to_string((unsigned long)inst.pid) + 
-                     std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle) +
-                     std::string(" solutionPath=") + (inst.solutionPath.empty()?"<none>":inst.solutionPath));
+            // AppendLog(std::string("[vs] VS process: pid=") + std::to_string((unsigned long)inst.pid) +   // VS日志已禁用
+            //          std::string(" title=") + (inst.windowTitle.empty()?"<none>":inst.windowTitle) +     // VS日志已禁用
+            //          std::string(" solutionPath=") + (inst.solutionPath.empty()?"<none>":inst.solutionPath));  // VS日志已禁用
         }
 
 
@@ -2207,7 +2206,7 @@ namespace VSInspector
 
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         bool didCoInit = SUCCEEDED(hr);
-        AppendLog(std::string("[vs] CoInitializeEx hr=") + std::to_string((long)hr) + std::string(" didCoInit=") + (didCoInit?"true":"false"));
+        // AppendLog(std::string("[vs] CoInitializeEx hr=") + std::to_string((long)hr) + std::string(" didCoInit=") + (didCoInit?"true":"false"));  // VS日志已禁用
         
         // 检查当前进程权限
         HANDLE hToken;
@@ -2217,7 +2216,7 @@ namespace VSInspector
             DWORD size = sizeof(TOKEN_ELEVATION);
             if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size))
             {
-                AppendLog(std::string("[vs] Current process elevation: ") + (elevation.TokenIsElevated ? "Elevated" : "Not Elevated"));
+                // AppendLog(std::string("[vs] Current process elevation: ") + (elevation.TokenIsElevated ? "Elevated" : "Not Elevated"));  // VS日志已禁用
             }
             CloseHandle(hToken);
         }
@@ -2228,27 +2227,27 @@ namespace VSInspector
             // 设置更宽松的COM安全级别以访问ROT
             HRESULT hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
                 RPC_C_AUTHN_LEVEL_NONE, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
-            AppendLog(std::string("[vs] CoInitializeSecurity hr=") + std::to_string((long)hrSec));
+            // AppendLog(std::string("[vs] CoInitializeSecurity hr=") + std::to_string((long)hrSec));  // VS日志已禁用
             if (SUCCEEDED(hrSec)) 
             {
                 comSecurityInitialized = true;
-                AppendLog("[vs] COM security initialized with RPC_C_AUTHN_LEVEL_NONE");
+                // AppendLog("[vs] COM security initialized with RPC_C_AUTHN_LEVEL_NONE");  // VS日志已禁用
             }
             else
             {
                 // 如果失败，尝试更宽松的设置
                 hrSec = CoInitializeSecurity(NULL, -1, NULL, NULL,
                     RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_IMP_LEVEL_IDENTIFY, NULL, EOAC_NONE, NULL);
-                AppendLog(std::string("[vs] CoInitializeSecurity retry hr=") + std::to_string((long)hrSec));
+                // AppendLog(std::string("[vs] CoInitializeSecurity retry hr=") + std::to_string((long)hrSec));  // VS日志已禁用
                 if (SUCCEEDED(hrSec)) 
                 {
                     comSecurityInitialized = true;
-                    AppendLog("[vs] COM security initialized with fallback settings");
+                    // AppendLog("[vs] COM security initialized with fallback settings");  // VS日志已禁用
                 }
                 else
                 {
                     // 一些情况下可能已由其他组件初始化（RPC_E_TOO_LATE）
-                    AppendLog("[vs] COM security not changed (possibly already initialized elsewhere)");
+                    // AppendLog("[vs] COM security not changed (possibly already initialized elsewhere)");  // VS日志已禁用
                 }
             }
         }
@@ -2256,9 +2255,9 @@ namespace VSInspector
         APTTYPE aptType = APTTYPE_CURRENT;
         APTTYPEQUALIFIER aptQual = APTTYPEQUALIFIER_NONE;
         HRESULT hrApt = CoGetApartmentType(&aptType, &aptQual);
-        AppendLog(std::string("[vs] CoGetApartmentType hr=") + std::to_string((long)hrApt) +
-                  std::string(" aptType=") + std::to_string((int)aptType) +
-                  std::string(" aptQual=") + std::to_string((int)aptQual));
+        // AppendLog(std::string("[vs] CoGetApartmentType hr=") + std::to_string((long)hrApt) +  // VS日志已禁用
+        //          std::string(" aptType=") + std::to_string((int)aptType) +                      // VS日志已禁用
+        //          std::string(" aptQual=") + std::to_string((int)aptQual));                      // VS日志已禁用
 
         // Diagnostic: Process elevation
         BOOL isElevated = FALSE;
@@ -2273,29 +2272,29 @@ namespace VSInspector
             }
             CloseHandle(hTokenDiag);
         }
-        AppendLog(std::string("[vs] Elevation: ") + (isElevated ? "elevated" : "standard"));
+        // AppendLog(std::string("[vs] Elevation: ") + (isElevated ? "elevated" : "standard"));  // VS日志已禁用
 
         // Diagnostic: Process bitness
         BOOL isWow64 = FALSE;
         IsWow64Process(GetCurrentProcess(), &isWow64);
-        AppendLog(std::string("[vs] Bitness: ") + (sizeof(void*)==8?"x64":"x86") + (isWow64?" (WOW64)":""));
+        // AppendLog(std::string("[vs] Bitness: ") + (sizeof(void*)==8?"x64":"x86") + (isWow64?" (WOW64)":""));  // VS日志已禁用
 
         IRunningObjectTable* pRot = NULL;
         IEnumMoniker* pEnum = NULL;
         HRESULT hrRot = GetRunningObjectTable(0, &pRot);
-        AppendLog(std::string("[vs] GetRunningObjectTable hr=") + std::to_string((long)hrRot));
+        // AppendLog(std::string("[vs] GetRunningObjectTable hr=") + std::to_string((long)hrRot));  // VS日志已禁用
         if (SUCCEEDED(hrRot) && pRot)
         {
             // 获取枚举器
             HRESULT hrEnum = pRot->EnumRunning(&pEnum);
-            AppendLog(std::string("[vs] EnumRunning hr=") + std::to_string((long)hrEnum));
+            // AppendLog(std::string("[vs] EnumRunning hr=") + std::to_string((long)hrEnum));  // VS日志已禁用
             
             if (SUCCEEDED(hrEnum) && pEnum)
             {
 
                 //log
-                AppendLog("[vs] GetRunningObjectTable succeeded");
-                AppendLog("[vs]   EnumRunning succeeded");
+                // AppendLog("[vs] GetRunningObjectTable succeeded");  // VS日志已禁用
+                // AppendLog("[vs]   EnumRunning succeeded");  // VS日志已禁用
     
                 // 扫描所有ROT条目
                 std::vector<std::string> allEntries;
@@ -2305,7 +2304,7 @@ namespace VSInspector
                 ULONG fetched = 0;
                 int count = 0;
                 
-                AppendLog("[vs]  5. Scanning ROT entries...");
+                // AppendLog("[vs]  5. Scanning ROT entries...");  // VS日志已禁用
                 
                 bool anyRotEntries = false;
                 
@@ -2315,7 +2314,7 @@ namespace VSInspector
                     if (hrNext == S_OK)
                     {
                         anyRotEntries = true;
-                        AppendLog("[vs]  in Next succeeded");
+                        // AppendLog("[vs]  in Next succeeded");  // VS日志已禁用
 
                         IBindCtx* pCtx = NULL;
                         hr = CreateBindCtx(0, &pCtx);
@@ -2330,18 +2329,18 @@ namespace VSInspector
                                 allEntries.push_back(s);
                                 
                                 //log
-                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                AppendLog("[vs]  Entry " + std::to_string(count) + ": " + s);
+                                // AppendLog("[vs]  Entry " + std::to_string(count) + ": " + s);  // VS日志已禁用
                                 
                                 // 检查是否是Visual Studio DTE对象
                                 if (s.find("!VisualStudio.DTE") != std::string::npos)
                                 {
                                     vsEntries.push_back(s);
                                     //log
-                                    AppendLog("[vs]  in GetDisplayName succeeded");
+                                    // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                    AppendLog("[vs]  *** Found Visual Studio DTE object! ***");
+                                    // AppendLog("[vs]  *** Found Visual Studio DTE object! ***");  // VS日志已禁用
                                     
                                     // 尝试获取COM对象
                                     IUnknown* pUnk = NULL;
@@ -2349,9 +2348,9 @@ namespace VSInspector
                                     if (SUCCEEDED(hr) && pUnk)
                                     {
                                         //log
-                                        AppendLog("[vs]  in GetDisplayName succeeded");
+                                        // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                        AppendLog("[vs]  Successfully got COM object");
+                                        // AppendLog("[vs]  Successfully got COM object");  // VS日志已禁用
                                         
                                         // 获取IDispatch接口
                                         IDispatch* pDisp = NULL;
@@ -2359,9 +2358,9 @@ namespace VSInspector
                                         if (SUCCEEDED(hr) && pDisp)
                                         {
                                             //log
-                                            AppendLog("[vs]  in GetDisplayName succeeded");
+                                            // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                            AppendLog("[vs]  Successfully got IDispatch interface");
+                                            // AppendLog("[vs]  Successfully got IDispatch interface");  // VS日志已禁用
                                             
                                             // 尝试获取Solution属性
                                             DISPID dispidSolution = 0;
@@ -2370,9 +2369,9 @@ namespace VSInspector
                                             if (SUCCEEDED(hr))
                                             {
                                                 //log
-                                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                                AppendLog("[vs]  Got Solution DISPID: " + std::to_string(dispidSolution));
+                                                // AppendLog("[vs]  Got Solution DISPID: " + std::to_string(dispidSolution));  // VS日志已禁用
                                                 
                                                 // 调用Solution属性
                                                 VARIANT resultSolution;
@@ -2382,16 +2381,16 @@ namespace VSInspector
                                                 if (SUCCEEDED(hr))
                                                 {
                                                     //log
-                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+                                                    // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                                    AppendLog("[vs]  Successfully invoked Solution property, vt=" + std::to_string(resultSolution.vt));
+                                                    // AppendLog("[vs]  Successfully invoked Solution property, vt=" + std::to_string(resultSolution.vt));  // VS日志已禁用
                                                     
                                                     if (resultSolution.vt == VT_DISPATCH && resultSolution.pdispVal)
                                                     {
                                                         //log
-                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+                                                        // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
  
-                                                        AppendLog("[vs]  Solution is a dispatch object");
+                                                        // AppendLog("[vs]  Solution is a dispatch object");  // VS日志已禁用
                                                         
                                                         // 尝试获取FullName属性
                                                         IDispatch* pSolution = resultSolution.pdispVal;
@@ -2401,9 +2400,9 @@ namespace VSInspector
                                                         if (SUCCEEDED(hr))
                                                         {
                                                         //log
-                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+                                                        // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                        AppendLog("[vs]  Got FullName DISPID: " + std::to_string(dispidFullName));
+                                                        // AppendLog("[vs]  Got FullName DISPID: " + std::to_string(dispidFullName));  // VS日志已禁用
                                                         
                                                         // 调用FullName属性
                                                         VARIANT resultFullName;
@@ -2412,18 +2411,18 @@ namespace VSInspector
                                                         if (SUCCEEDED(hr))
                                                         {
                                                             //log
-                                                            AppendLog("[vs]  in GetDisplayName succeeded");
+                                                            // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                            AppendLog("[vs]  Successfully invoked FullName property, vt=" + std::to_string(resultFullName.vt));
+                                                            // AppendLog("[vs]  Successfully invoked FullName property, vt=" + std::to_string(resultFullName.vt));  // VS日志已禁用
                                                             
                                                             if (resultFullName.vt == VT_BSTR && resultFullName.bstrVal)
                                                             {
                                                                 std::wstring ws(resultFullName.bstrVal);
                                                                 std::string slnPath = WideToUtf8(ws);
                                                                 //log
-                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                                AppendLog("[vs]  *** Solution.FullName = " + slnPath + " ***");
+                                                                // AppendLog("[vs]  *** Solution.FullName = " + slnPath + " ***");  // VS日志已禁用
                                                                 // Map this solution path to the corresponding VSInstance by PID
                                                                 DWORD pidFromName = 0;
                                                                 // Prefer fast parse from ROT display name
@@ -2443,7 +2442,7 @@ namespace VSInspector
                                                                         if (inst.pid == pidFinal)
                                                                         {
                                                                             inst.solutionPath = slnPath;
-                                                                            AppendLog(std::string("[vs]  Mapped solution to pid=") + std::to_string((unsigned long)pidFinal));
+                                                                            // AppendLog(std::string("[vs]  Mapped solution to pid=") + std::to_string((unsigned long)pidFinal));  // VS日志已禁用
                                                                             break;
                                                                         }
                                                                     }
@@ -2452,83 +2451,83 @@ namespace VSInspector
                                                             else if (resultFullName.vt == VT_EMPTY || resultFullName.vt == VT_NULL)
                                                             {
                                                                 //log
-                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                                AppendLog("[vs]  Solution.FullName is empty - VS may be in Open Folder mode");
+                                                                // AppendLog("[vs]  Solution.FullName is empty - VS may be in Open Folder mode");  // VS日志已禁用
                                                             }
                                                             else
                                                             {
                                                                 //log
-                                                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                                AppendLog("[vs]  FullName unexpected vt=" + std::to_string(resultFullName.vt));
+                                                                // AppendLog("[vs]  FullName unexpected vt=" + std::to_string(resultFullName.vt));  // VS日志已禁用
                                                             }
                                                             VariantClear(&resultFullName);
                                                         }
                                                         else
                                                         {
                                                             //log
-                                                            AppendLog("[vs]  in GetDisplayName succeeded");
+                                                            // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                            AppendLog("[vs]  Failed to invoke FullName property: " + std::to_string(hr));
+                                                            // AppendLog("[vs]  Failed to invoke FullName property: " + std::to_string(hr));  // VS日志已禁用
                                                         }
                                                     }
                                                     else
                                                     {
                                                         //log
-                                                        AppendLog("[vs]  in GetDisplayName succeeded");
+                                                        // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                        AppendLog("[vs]  Failed to get FullName DISPID: " + std::to_string(hr));
+                                                        // AppendLog("[vs]  Failed to get FullName DISPID: " + std::to_string(hr));  // VS日志已禁用
                                                     }
                                                 }
                                                 else if (resultSolution.vt == VT_EMPTY || resultSolution.vt == VT_NULL)
                                                 {
                                                     //log
-                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+                                                    // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                    AppendLog("[vs]  Solution is empty - VS may be in Open Folder mode");
+                                                    // AppendLog("[vs]  Solution is empty - VS may be in Open Folder mode");  // VS日志已禁用
                                                 }
                                                 else
                                                 {
                                                     //log
-                                                    AppendLog("[vs]  in GetDisplayName succeeded");
+                                                    // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                    AppendLog("[vs]  Solution is not a dispatch object, vt=" + std::to_string(resultSolution.vt));
+                                                    // AppendLog("[vs]  Solution is not a dispatch object, vt=" + std::to_string(resultSolution.vt));  // VS日志已禁用
                                                 }
                                                 VariantClear(&resultSolution);
                                             }
                                             else
                                             {
                                                 //log
-                                                AppendLog("[vs]  in GetDisplayName succeeded");
+                                                // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                                AppendLog("[vs]  Failed to invoke Solution property: " + std::to_string(hr));
+                                                // AppendLog("[vs]  Failed to invoke Solution property: " + std::to_string(hr));  // VS日志已禁用
                                             }
                                         }
                                         else
                                         {
                                             //log
-                                            AppendLog("[vs]  in GetDisplayName succeeded");
+                                            // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                            AppendLog("[vs]  Failed to get Solution DISPID: " + std::to_string(hr));
+                                            // AppendLog("[vs]  Failed to get Solution DISPID: " + std::to_string(hr));  // VS日志已禁用
                                         }
                                         pDisp->Release();
                                     }
                                     else
                                     {
                                         //log
-                                        AppendLog("[vs]  in GetDisplayName succeeded");
+                                        // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                        AppendLog("[vs]  Failed to get IDispatch interface: " + std::to_string(hr));
+                                        // AppendLog("[vs]  Failed to get IDispatch interface: " + std::to_string(hr));  // VS日志已禁用
                                     }
                                     pUnk->Release();
                                 }
                                 else
                                 {
                                     //log
-                                    AppendLog("[vs]  in GetDisplayName succeeded");
+                                    // AppendLog("[vs]  in GetDisplayName succeeded");  // VS日志已禁用
 
-                                    AppendLog("[vs]  Failed to get COM object: " + std::to_string(hr));
+                                    // AppendLog("[vs]  Failed to get COM object: " + std::to_string(hr));  // VS日志已禁用
                                 }
                             }
                             
@@ -2542,14 +2541,14 @@ namespace VSInspector
                     }
                     else
                     {
-                        AppendLog(std::string("[vs]  Next returned hr=") + std::to_string((long)hrNext));
+                        // AppendLog(std::string("[vs]  Next returned hr=") + std::to_string((long)hrNext));  // VS日志已禁用
                         break;
                     }
                 }
                 
                 if (!anyRotEntries)
                 {
-                    AppendLog("[vs]  ROT enumeration returned no entries (Next != S_OK). Possible causes: ROT empty or access denied.");
+                    // AppendLog("[vs]  ROT enumeration returned no entries (Next != S_OK). Possible causes: ROT empty or access denied.");  // VS日志已禁用
                 }
 
                             
@@ -2558,12 +2557,12 @@ namespace VSInspector
             }
             else
             {
-                AppendLog("[vs] GetRunningObjectTable failed");
+                // AppendLog("[vs] GetRunningObjectTable failed");  // VS日志已禁用
             }
         }
         else
         {
-            AppendLog("[vs] GetRunningObjectTable failed");
+            // AppendLog("[vs] GetRunningObjectTable failed");  // VS日志已禁用
         }
         
         // 正确释放 COM 对象
@@ -2579,7 +2578,7 @@ namespace VSInspector
         }
         
         // 只使用COM接口获取solution路径，不使用备用方法
-        AppendLog("[vs] Solution detection completed - only COM interface used");
+        // AppendLog("[vs] Solution detection completed - only COM interface used");  // VS日志已禁用
 
         {
             std::lock_guard<std::mutex> lock(g_vsMutexVS);
@@ -2845,7 +2844,7 @@ namespace VSInspector
         ImGui::SameLine();
         if (ImGui::Button("[Refresh]"))
         {
-            ReplaceTool::AppendLog("[vs] UI: Refresh clicked");
+            // ReplaceTool::AppendLog("[vs] UI: Refresh clicked");  // VS日志已禁用
             Refresh();
             g_lastRefreshTime = currentTime; // 更新最后刷新时间
         }
@@ -2854,11 +2853,11 @@ namespace VSInspector
         {
             if (g_autoRefreshEnabled)
             {
-                AppendLog("[vs] Auto refresh enabled");
+                // AppendLog("[vs] Auto refresh enabled");  // VS日志已禁用
             }
             else
             {
-                AppendLog("[vs] Auto refresh disabled");
+                // AppendLog("[vs] Auto refresh disabled");  // VS日志已禁用
             }
         }
 

@@ -30,6 +30,7 @@
 #pragma comment(lib, "Winhttp.lib")
 #endif
 #include <algorithm>
+#include <map>
 
 namespace WordReminder
 {
@@ -41,6 +42,121 @@ namespace WordReminder
     static void DestroyDanmakuWindow();
     static void StartDanmakuReminder();
     static void StopDanmakuReminder();
+    
+    // 选中文字缓存结构（用于 ImGui InputText 回调）
+    struct SelectionCache
+    {
+        bool has_selection = false;
+        int sel_start = 0;
+        int sel_end = 0;
+        std::string text;      // 对应整个 InputText 的 UTF-8 文本快照
+        std::string item_id;   // 对应的 InputText ID，用于区分不同的控件
+    };
+    
+    // 全局选中文字缓存（每个控件一个缓存）
+    static std::map<std::string, SelectionCache> g_SelectionCacheMap;
+    
+    // 当前正在处理的 Item ID（用于回调函数中识别是哪个控件）
+    static thread_local std::string* g_currentItemIdPtr = nullptr;
+    
+    // ImGui InputText 回调函数：持续更新选中文字缓存
+    static int StaticTextEditCallback(ImGuiInputTextCallbackData* data)
+    {
+        if (!data || !g_currentItemIdPtr || g_currentItemIdPtr->empty())
+        {
+            return 0;
+        }
+        
+        const std::string& itemId = *g_currentItemIdPtr;
+        SelectionCache& cache = g_SelectionCacheMap[itemId];
+        
+        // 读取选中范围
+        int sel_start = data->SelectionStart;
+        int sel_end = data->SelectionEnd;
+        
+        // 确保范围有效
+        if (sel_start < 0) sel_start = 0;
+        if (sel_end < 0) sel_end = 0;
+        if (sel_start > sel_end) std::swap(sel_start, sel_end);
+        
+        // 检查是否有有效选区
+        if (sel_start != sel_end && data->Buf && data->BufTextLen > 0)
+        {
+            // 确保范围在有效范围内
+            if (sel_start < data->BufTextLen && sel_end <= data->BufTextLen)
+            {
+                cache.has_selection = true;
+                cache.sel_start = sel_start;
+                cache.sel_end = sel_end;
+                cache.text = std::string(data->Buf, data->BufTextLen);
+                cache.item_id = itemId;
+            }
+            else
+            {
+                cache.has_selection = false;
+            }
+        }
+        else
+        {
+            cache.has_selection = false;
+        }
+        
+        return 0;
+    }
+    
+    // 获取剪贴板文本（UTF-8）
+    static std::string GetClipboardTextUTF8()
+    {
+#ifdef _WIN32
+        if (!OpenClipboard(nullptr))
+        {
+            return "";
+        }
+        
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (!hData)
+        {
+            CloseClipboard();
+            return "";
+        }
+        
+        wchar_t* pszText = static_cast<wchar_t*>(GlobalLock(hData));
+        if (!pszText)
+        {
+            CloseClipboard();
+            return "";
+        }
+        
+        // 将 Unicode 转换为 UTF-8
+        int wideLen = (int)wcslen(pszText);
+        if (wideLen == 0)
+        {
+            GlobalUnlock(hData);
+            CloseClipboard();
+            return "";
+        }
+        
+        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, pszText, wideLen, nullptr, 0, nullptr, nullptr);
+        if (utf8Len <= 0)
+        {
+            GlobalUnlock(hData);
+            CloseClipboard();
+            return "";
+        }
+        
+        std::string result(utf8Len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, pszText, wideLen, &result[0], utf8Len, nullptr, nullptr);
+        
+        GlobalUnlock(hData);
+        CloseClipboard();
+        
+        return result;
+#else
+        // 非 Windows 平台可以使用 ImGui::GetClipboardText()
+        const char* clipboardText = ImGui::GetClipboardText();
+        return clipboardText ? std::string(clipboardText) : std::string();
+#endif
+    }
     
     // 内部状态管理
     struct FeatureState
@@ -75,6 +191,15 @@ namespace WordReminder
         // 故事生成状态
         bool storyGenerating = false;
         std::string generatedStory;
+        // 选中文字AI解释状态
+        bool selectedTextAiGenerating = false;
+        std::string selectedTextForAi;
+        std::string selectedTextAiResult;
+        std::string pendingSelectedText;  // 临时保存右键菜单前的选中文字
+        // 保存选中范围（用于恢复高亮）
+        int pendingSelectionStart = -1;
+        int pendingSelectionEnd = -1;
+        std::string pendingSelectionItemId;  // 对应的 InputText ID
         char ollamaHost[128] = "121.129.32.42";
         int ollamaPort = 11434;
         char ollamaPath[128] = "/v1/chat/completions";
@@ -89,6 +214,50 @@ namespace WordReminder
     };
     
     static std::unique_ptr<FeatureState> g_state;
+    
+    // 触发 AI 解释（在这里调用真正的 AI 接口）
+    static void TriggerAIExplain(const std::string& selectedText)
+    {
+        if (selectedText.empty() || !g_state)
+        {
+            return;
+        }
+        
+        // 限制文本长度
+        if (selectedText.length() >= 5000)
+        {
+            AppendLog("[AI解释] 选中文字过长，已截断");
+            std::string truncated = selectedText.substr(0, 4997) + "...";
+            g_state->selectedTextForAi = truncated;
+        }
+        else
+        {
+            g_state->selectedTextForAi = selectedText;
+        }
+        
+        g_state->selectedTextAiGenerating = true;
+        g_state->selectedTextAiResult.clear();
+        
+        AppendLog("[AI解释] 开始解释文字: " + selectedText.substr(0, 50) + "...");
+        
+        // 在这里调用真正的 AI 接口
+        OllamaClient::GenerateWordMeaningAsync(selectedText, [](bool success, const std::string& result)
+        {
+            if (!g_state) return;
+            
+            if (success && !result.empty())
+            {
+                g_state->selectedTextAiResult = result;
+                AppendLog("[AI解释] 解释成功");
+            }
+            else
+            {
+                g_state->selectedTextAiResult = "AI 解释失败，请检查 AI 配置或网络连接。";
+                AppendLog("[AI解释] 解释失败");
+            }
+            g_state->selectedTextAiGenerating = false;
+        });
+    }
     
     
 
@@ -2624,7 +2793,7 @@ namespace WordReminder
                 for (int idx = 0; idx < static_cast<int>(sortedIndices.size()); idx++)
                 {
                     int i = sortedIndices[idx];
-                    const auto& entry = g_state->words[i];
+                    auto& entry = g_state->words[i];
                     
                     ImGui::PushID(i);
                     
@@ -2686,7 +2855,145 @@ namespace WordReminder
                     ImGui::TextWrapped("释义:");
                     {
                         std::string idm = std::string("##meaning_") + std::to_string(i);
-                        Utils::DrawCopyableMultiline(idm.c_str(), entry.meaning);
+                        
+                        // 使用可编辑的 InputTextMultiline，并添加回调来捕获选中文字
+                        // 准备文本缓冲区（可编辑）
+                        static std::map<int, std::vector<char>> textBuffers;
+                        static std::map<int, std::string> lastMeanings; // 用于检测 meaning 是否改变
+                        
+                        // 如果 meaning 改变了，更新缓冲区
+                        if (lastMeanings.find(i) == lastMeanings.end() || lastMeanings[i] != entry.meaning)
+                        {
+                            textBuffers[i] = std::vector<char>(entry.meaning.begin(), entry.meaning.end());
+                            textBuffers[i].push_back('\0');
+                            textBuffers[i].resize(entry.meaning.size() + 1024); // 预留空间
+                            lastMeanings[i] = entry.meaning;
+                        }
+                        else if (textBuffers.find(i) == textBuffers.end() || textBuffers[i].empty())
+                        {
+                            textBuffers[i] = std::vector<char>(entry.meaning.begin(), entry.meaning.end());
+                            textBuffers[i].push_back('\0');
+                            textBuffers[i].resize(entry.meaning.size() + 1024); // 预留空间
+                        }
+                        
+                        // 设置当前 Item ID，供回调函数使用
+                        g_currentItemIdPtr = &idm;
+                        
+                        // 计算合适的高度
+                        float wrapWidth = ImGui::GetContentRegionAvail().x;
+                        if (wrapWidth <= 0.0f) wrapWidth = 400.0f;
+                        ImVec2 measured = ImGui::CalcTextSize(entry.meaning.c_str(), nullptr, true, wrapWidth);
+                        float lineH = ImGui::GetTextLineHeightWithSpacing();
+                        float minH = lineH * 1.4f;
+                        float maxH = lineH * 6.0f;
+                        float height = measured.y + ImGui::GetStyle().FramePadding.y * 2.0f;
+                        height = (std::max)(minH, (std::min)(maxH, height));
+                        
+                        // 绘制可编辑的 InputTextMultiline，带回调
+                        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 4));
+                        ImGui::InputTextMultiline(
+                            idm.c_str(),
+                            textBuffers[i].data(),
+                            textBuffers[i].size(),
+                            ImVec2(-1, height),
+                            ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_NoHorizontalScroll,
+                            StaticTextEditCallback
+                        );
+                        ImGui::PopStyleVar();
+                        
+                        // 清空当前 Item ID 指针
+                        g_currentItemIdPtr = nullptr;
+                        
+                        // 更新 entry.meaning（如果用户编辑了文本）
+                        std::string newMeaning(textBuffers[i].data());
+                        if (newMeaning != entry.meaning)
+                        {
+                            entry.meaning = newMeaning;
+                            SaveWords();
+                        }
+                        
+                        // 检测右键点击并触发 AI 解释
+#ifdef _WIN32
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                        {
+                            std::string selectedText;
+                            
+                            // 从缓存中获取选中文字
+                            auto it = g_SelectionCacheMap.find(idm);
+                            if (it != g_SelectionCacheMap.end() && it->second.has_selection)
+                            {
+                                const SelectionCache& cache = it->second;
+                                if (cache.sel_start < cache.sel_end && 
+                                    cache.sel_start >= 0 && 
+                                    cache.sel_end <= (int)cache.text.length())
+                                {
+                                    selectedText = cache.text.substr(cache.sel_start, cache.sel_end - cache.sel_start);
+                                    AppendLog("[AI解释] 从缓存获取选中文字: " + selectedText.substr(0, 50) + 
+                                             ", 长度: " + std::to_string(selectedText.length()));
+                                }
+                            }
+                            
+                            // 如果没有选中文字，尝试从剪贴板获取
+                            if (selectedText.empty())
+                            {
+                                selectedText = GetClipboardTextUTF8();
+                                if (!selectedText.empty())
+                                {
+                                    AppendLog("[AI解释] 使用剪贴板文字: " + selectedText.substr(0, 50));
+                                }
+                            }
+                            
+                            // 如果还是没有，使用整个释义
+                            if (selectedText.empty())
+                            {
+                                selectedText = entry.meaning;
+                                AppendLog("[AI解释] 使用整个释义进行解释");
+                            }
+                            
+                            // 触发 AI 解释
+                            if (!selectedText.empty())
+                            {
+                                TriggerAIExplain(selectedText);
+                            }
+                        }
+#endif
+                        
+                        // 添加一个小按钮用于AI解释整段释义
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton(("🤖##ai_explain_" + std::to_string(i)).c_str()))
+                        {
+                            // 直接解释整个释义
+                            std::string textToExplain = entry.meaning;
+                            if (!textToExplain.empty() && textToExplain.length() < 5000)
+                            {
+                                g_state->selectedTextForAi = textToExplain;
+                                g_state->selectedTextAiGenerating = true;
+                                g_state->selectedTextAiResult.clear();
+                                
+                                AppendLog("[AI解释] 开始解释整段释义: " + textToExplain.substr(0, 50) + "...");
+                                
+                                OllamaClient::GenerateWordMeaningAsync(textToExplain, [](bool success, const std::string& result)
+                                {
+                                    if (!g_state) return;
+                                    
+                                    if (success && !result.empty())
+                                    {
+                                        g_state->selectedTextAiResult = result;
+                                        AppendLog("[AI解释] 解释成功");
+                                    }
+                                    else
+                                    {
+                                        g_state->selectedTextAiResult = "AI 解释失败，请检查 AI 配置或网络连接。";
+                                        AppendLog("[AI解释] 解释失败");
+                                    }
+                                    g_state->selectedTextAiGenerating = false;
+                                });
+                            }
+                        }
+                        if (ImGui::IsItemHovered())
+                        {
+                            ImGui::SetTooltip("点击此按钮解释整段释义\n或选中部分文字后，按 Ctrl+C 复制，然后右键点击释义区域");
+                        }
                     }
                     
                     if (entry.isMastered)
@@ -2979,6 +3286,65 @@ namespace WordReminder
                 {
                     g_state->generatedStory.clear();
                 }
+        ImGui::End();
+    }
+}
+        
+        // 选中文字AI解释弹窗
+        if (!g_state->selectedTextAiGenerating && !g_state->selectedTextAiResult.empty())
+        {
+            ImGui::SetNextWindowSize(ImVec2(700, 400), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSizeConstraints(ImVec2(600, 300), ImVec2(FLT_MAX, FLT_MAX));
+            std::string windowTitle = "🤖 AI 解释: " + g_state->selectedTextForAi;
+            if (windowTitle.length() > 50)
+            {
+                windowTitle = windowTitle.substr(0, 47) + "...";
+            }
+            if (ImGui::Begin(windowTitle.c_str(), nullptr, ImGuiWindowFlags_None))
+            {
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "选中文字: %s", g_state->selectedTextForAi.c_str());
+                ImGui::Separator();
+                ImGui::Spacing();
+                
+                // 使用可滚动的文本区域显示解释结果
+                ImGui::BeginChild("AiExplanationContent", ImVec2(0, -40), false, ImGuiWindowFlags_HorizontalScrollbar);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextWrapped("%s", g_state->selectedTextAiResult.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndChild();
+                
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("复制解释", ImVec2(120, 0)))
+                {
+                    ImGui::SetClipboardText(g_state->selectedTextAiResult.c_str());
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("关闭", ImVec2(120, 0)))
+                {
+                    g_state->selectedTextAiResult.clear();
+                    g_state->selectedTextForAi.clear();
+                }
+                ImGui::End();
+            }
+        }
+        
+        if (g_state->selectedTextAiGenerating)
+        {
+            ImGui::SetNextWindowSize(ImVec2(400, 150), ImGuiCond_Always);
+            if (ImGui::Begin("🤖 AI 解释中...", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse))
+            {
+                ImGui::Spacing();
+                ImGui::Text("正在对选中文字进行 AI 解释...");
+                ImGui::Spacing();
+                ImGui::Text("选中文字: %s", g_state->selectedTextForAi.c_str());
+                ImGui::Spacing();
+                if (ImGui::Button("取消", ImVec2(100, 0)))
+                {
+                    g_state->selectedTextAiGenerating = false;
+                    g_state->selectedTextForAi.clear();
+                }
                 ImGui::End();
             }
         }
@@ -2987,3 +3353,4 @@ namespace WordReminder
         ImGui::End();
     }
 }
+
