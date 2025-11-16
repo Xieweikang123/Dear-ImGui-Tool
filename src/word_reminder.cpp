@@ -1,5 +1,6 @@
 #include "word_reminder.h"
 #include "word_reminder_utils.h"
+#include "ollama_client.h"
 #include "imgui.h"
 #include "replace_tool.h"
 #include <string>
@@ -189,6 +190,13 @@ namespace WordReminder
         }
         
         LoadWords();
+        
+        // 初始化 Ollama 客户端并同步配置
+#ifdef _WIN32
+        OllamaClient::Initialize();
+        OllamaClient::SetConfig(g_state->ollamaHost, g_state->ollamaPort, 
+                                g_state->ollamaPath, g_state->ollamaModel);
+#endif
         
         // 更新统计信息
         g_state->totalWords = static_cast<int>(g_state->words.size());
@@ -525,196 +533,6 @@ namespace WordReminder
 #endif
 
 #ifdef _WIN32
-    static std::wstring Utf8ToWide(const std::string& utf8)
-    {
-        if (utf8.empty()) return std::wstring();
-        int count = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-        if (count <= 0) return std::wstring();
-        std::wstring wide;
-        wide.resize(count - 1);
-        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), count);
-        return wide;
-    }
-
-    static std::string CallOllamaChat(const std::string& hostUtf8,
-                                      int port,
-                                      const std::string& pathUtf8,
-                                      const std::string& modelName,
-                                      const std::string& userContent)
-    {
-        std::wstring host = Utf8ToWide(hostUtf8.empty() ? "121.129.32.42" : hostUtf8);
-        std::wstring path = Utf8ToWide(pathUtf8.empty() ? "/v1/chat/completions" : pathUtf8);
-        if (host.empty()) host = L"121.129.32.42";
-        if (path.empty()) path = L"/v1/chat/completions";
-        if (port <= 0) port = 11434;
-        std::string model = modelName.empty() ? "gpt-oss:20b" : modelName;
-
-        HINTERNET hSession = WinHttpOpen(L"Dear-ImGui-Tool/1.0",
-                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                         WINHTTP_NO_PROXY_NAME,
-                                         WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession)
-        {
-            AppendLog("[Ollama] WinHttpOpen failed");
-            return std::string();
-        }
-
-        DWORD timeout = 5000; // 5s connect/send/receive timeout
-        WinHttpSetTimeouts(hSession, timeout, timeout, timeout, timeout);
-
-        HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), static_cast<INTERNET_PORT>(port), 0);
-        if (!hConnect)
-        {
-            AppendLog("[Ollama] WinHttpConnect failed");
-            WinHttpCloseHandle(hSession);
-            return std::string();
-        }
-
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect,
-                                               L"POST",
-                                               path.c_str(),
-                                               NULL,
-                                               WINHTTP_NO_REFERER,
-                                               WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                               0);
-        if (!hRequest)
-        {
-            AppendLog("[Ollama] WinHttpOpenRequest failed");
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return std::string();
-        }
-
-        std::string jsonBody;
-        jsonBody.reserve(512 + userContent.size());
-        jsonBody = "{\"model\":\"" + model + "\",\"messages\":[";
-        jsonBody += "{\"role\":\"system\",\"content\":\"You are a helpful English-Chinese word explanation assistant. Reply in Chinese only, and DO NOT use markdown or any formatting symbols. Output plain text only.\"},";
-        jsonBody += "{\"role\":\"user\",\"content\":\"";
-        for (char c : userContent)
-        {
-            if (c == '\\') jsonBody += "\\\\";
-            else if (c == '"') jsonBody += "\\\"";
-            else if (c == '\n') jsonBody += "\\n";
-            else jsonBody.push_back(c);
-        }
-        jsonBody += "\"}],\"temperature\":0.7}";
-
-        std::wstring headers = L"Content-Type: application/json\r\n";
-        BOOL bResults = WinHttpSendRequest(hRequest,
-                                           headers.c_str(),
-                                           (DWORD)headers.size(),
-                                           (LPVOID)jsonBody.data(),
-                                           (DWORD)jsonBody.size(),
-                                           (DWORD)jsonBody.size(),
-                                           0);
-        if (!bResults)
-        {
-            AppendLog("[Ollama] WinHttpSendRequest failed");
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return std::string();
-        }
-
-        bResults = WinHttpReceiveResponse(hRequest, NULL);
-        if (!bResults)
-        {
-            AppendLog("[Ollama] WinHttpReceiveResponse failed");
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return std::string();
-        }
-
-        std::string response;
-        DWORD dwSize = 0;
-        do
-        {
-            dwSize = 0;
-            if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0)
-                break;
-
-            std::string buffer;
-            buffer.resize(dwSize);
-            DWORD dwDownloaded = 0;
-            if (!WinHttpReadData(hRequest, &buffer[0], dwSize, &dwDownloaded) || dwDownloaded == 0)
-                break;
-            buffer.resize(dwDownloaded);
-            response.append(buffer);
-        } while (dwSize > 0);
-
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-
-        const std::string key = "\"content\":";
-        size_t pos = response.find(key);
-        if (pos == std::string::npos)
-        {
-            AppendLog("[Ollama] no content field in response");
-            return std::string();
-        }
-        pos += key.size();
-        while (pos < response.size() && (response[pos] == ' ' || response[pos] == '\n'))
-            ++pos;
-        if (pos >= response.size() || response[pos] != '"')
-        {
-            AppendLog("[Ollama] content field malformed");
-            return std::string();
-        }
-        ++pos;
-        std::string content;
-        while (pos < response.size())
-        {
-            char c = response[pos++];
-            if (c == '\\')
-            {
-                if (pos >= response.size()) break;
-                char esc = response[pos++];
-                if (esc == 'n') content.push_back('\n');
-                else if (esc == 't') content.push_back('\t');
-                else content.push_back(esc);
-            }
-            else if (c == '"')
-            {
-                break;
-            }
-            else
-            {
-                content.push_back(c);
-            }
-        }
-
-        return content;
-    }
-
-    static std::string CleanAiText(const std::string& result)
-    {
-        std::string cleaned;
-        cleaned.reserve(result.size());
-        bool atLineStart = true;
-        for (size_t i = 0; i < result.size(); ++i)
-        {
-            char c = result[i];
-            if (atLineStart)
-            {
-                if (c == ' ' || c == '\t')
-                    continue;
-                if (c == '-' && i + 1 < result.size() && result[i + 1] == ' ')
-                {
-                    ++i;
-                    continue;
-                }
-                if (c == '*' || c == '#')
-                    continue;
-            }
-            if (c == '*')
-                continue;
-            cleaned.push_back(c);
-            atLineStart = (c == '\n' || c == '\r');
-        }
-        return cleaned;
-    }
 
     static void RequestAiExplanationForEntry(int entryIndex)
     {
@@ -732,23 +550,16 @@ namespace WordReminder
         entry.uiAiStatus = "AI 正在生成释义...";
 
         std::string word = entry.word;
-        std::string host = g_state->ollamaHost;
-        int port = g_state->ollamaPort;
-        std::string path = g_state->ollamaPath;
-        std::string model = g_state->ollamaModel;
 
-        std::thread([entryIndex, word, host, port, path, model]()
+        OllamaClient::GenerateWordMeaningAsync(word, [entryIndex](bool success, const std::string& result)
         {
-            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句(例句是纯英文版，不要翻译成中文)，不要使用 Markdown 或任何格式符号：") + word;
-            std::string result = CallOllamaChat(host, port, path, model, prompt);
-
             if (!g_state) return;
             if (entryIndex < 0 || entryIndex >= static_cast<int>(g_state->words.size())) return;
 
             auto& entry = g_state->words[entryIndex];
-            if (!result.empty())
+            if (success && !result.empty())
             {
-                entry.meaning = CleanAiText(result);
+                entry.meaning = result;
                 entry.uiAiStatus = "AI 释义生成完成";
                 SaveWords();
             }
@@ -757,7 +568,7 @@ namespace WordReminder
                 entry.uiAiStatus = "AI 请求失败或超时";
             }
             entry.uiAiGenerating = false;
-        }).detach();
+        });
     }
 #endif
 
@@ -2602,23 +2413,14 @@ namespace WordReminder
                         g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
 
                         std::string word = g_state->newWord;
-                        std::string host = g_state->ollamaHost;
-                        int port = g_state->ollamaPort;
-                        std::string path = g_state->ollamaPath;
-                        std::string model = g_state->ollamaModel;
-                        std::thread([word, host, port, path, model]()
+                        OllamaClient::GenerateWordMeaningAsync(word, [](bool success, const std::string& result)
                         {
-                            std::string prompt = std::string("请用中文解释这个英文单词，并给 1-2 个简单例句，输出纯中文文本，不要使用 Markdown 或任何格式符号：") + word;
-                            std::string result = CallOllamaChat(host, port, path, model, prompt);
-
                             if (!g_state)
                                 return;
 
-                            if (!result.empty())
+                            if (success && !result.empty())
                             {
-                                std::string cleaned = CleanAiText(result);
-
-                                strncpy(g_state->newMeaning, cleaned.c_str(), sizeof(g_state->newMeaning) - 1);
+                                strncpy(g_state->newMeaning, result.c_str(), sizeof(g_state->newMeaning) - 1);
                                 g_state->newMeaning[sizeof(g_state->newMeaning) - 1] = '\0';
                                 strncpy(g_state->aiStatus, "AI 释义生成完成", sizeof(g_state->aiStatus) - 1);
                                 g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
@@ -2629,7 +2431,7 @@ namespace WordReminder
                                 g_state->aiStatus[sizeof(g_state->aiStatus) - 1] = '\0';
                             }
                             g_state->aiGenerating = false;
-                        }).detach();
+                        });
                     }
                 }
             }
@@ -2690,6 +2492,11 @@ namespace WordReminder
             ImGui::SameLine();
             if (ImGui::Button("完成", ImVec2(120, 0)))
             {
+                // 同步配置到 OllamaClient
+#ifdef _WIN32
+                OllamaClient::SetConfig(g_state->ollamaHost, g_state->ollamaPort,
+                                        g_state->ollamaPath, g_state->ollamaModel);
+#endif
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();

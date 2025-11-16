@@ -68,6 +68,7 @@ set(APP_SOURCES
     src/feature_manager.cpp
     src/word_reminder.cpp
     src/word_reminder_utils.cpp
+    src/ollama_client.cpp
 )
 
 if(WIN32)
