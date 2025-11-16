@@ -59,46 +59,174 @@ namespace WordReminder
     // 当前正在处理的 Item ID（用于回调函数中识别是哪个控件）
     static thread_local std::string* g_currentItemIdPtr = nullptr;
     
-    // ImGui InputText 回调函数：持续更新选中文字缓存
+    // ImGui InputText 回调函数：自动换行 + 持续更新选中文字缓存
     static int StaticTextEditCallback(ImGuiInputTextCallbackData* data)
     {
-        if (!data || !g_currentItemIdPtr || g_currentItemIdPtr->empty())
+        if (!data)
         {
             return 0;
         }
         
-        const std::string& itemId = *g_currentItemIdPtr;
-        SelectionCache& cache = g_SelectionCacheMap[itemId];
-        
-        // 读取选中范围
-        int sel_start = data->SelectionStart;
-        int sel_end = data->SelectionEnd;
-        
-        // 确保范围有效
-        if (sel_start < 0) sel_start = 0;
-        if (sel_end < 0) sel_end = 0;
-        if (sel_start > sel_end) std::swap(sel_start, sel_end);
-        
-        // 检查是否有有效选区
-        if (sel_start != sel_end && data->Buf && data->BufTextLen > 0)
+        // 第一部分：处理选中文字缓存（保持原有功能）
+        if (g_currentItemIdPtr && !g_currentItemIdPtr->empty())
         {
-            // 确保范围在有效范围内
-            if (sel_start < data->BufTextLen && sel_end <= data->BufTextLen)
+            const std::string& itemId = *g_currentItemIdPtr;
+            SelectionCache& cache = g_SelectionCacheMap[itemId];
+            
+            // 读取选中范围
+            int sel_start = data->SelectionStart;
+            int sel_end = data->SelectionEnd;
+            
+            // 确保范围有效
+            if (sel_start < 0) sel_start = 0;
+            if (sel_end < 0) sel_end = 0;
+            if (sel_start > sel_end) std::swap(sel_start, sel_end);
+            
+            // 检查是否有有效选区
+            if (sel_start != sel_end && data->Buf && data->BufTextLen > 0)
             {
-                cache.has_selection = true;
-                cache.sel_start = sel_start;
-                cache.sel_end = sel_end;
-                cache.text = std::string(data->Buf, data->BufTextLen);
-                cache.item_id = itemId;
+                // 确保范围在有效范围内
+                if (sel_start < data->BufTextLen && sel_end <= data->BufTextLen)
+                {
+                    cache.has_selection = true;
+                    cache.sel_start = sel_start;
+                    cache.sel_end = sel_end;
+                    cache.text = std::string(data->Buf, data->BufTextLen);
+                    cache.item_id = itemId;
+                }
+                else
+                {
+                    cache.has_selection = false;
+                }
             }
             else
             {
                 cache.has_selection = false;
             }
         }
-        else
+        
+        // 第二部分：自动换行处理
+        // 只在文本内容变化时处理，避免死循环
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && data->Buf && data->BufTextLen > 0)
         {
-            cache.has_selection = false;
+            // 获取可用宽度（减去内边距）
+            float availableWidth = ImGui::GetContentRegionAvail().x;
+            if (availableWidth <= 0.0f) availableWidth = 400.0f;
+            
+            // 减去左右内边距（FramePadding）
+            ImGuiStyle& style = ImGui::GetStyle();
+            float framePaddingX = style.FramePadding.x * 2.0f;
+            float wrapWidth = availableWidth - framePaddingX - 20.0f; // 额外留一些边距
+            if (wrapWidth <= 0.0f) wrapWidth = 300.0f;
+            
+            // 获取字体大小用于计算文本宽度
+            float fontSize = ImGui::GetFontSize();
+            
+            // 遍历文本，按行处理
+            int lineStart = 0;
+            int pos = 0;
+            bool needsUpdate = false;
+            
+            while (pos < data->BufTextLen)
+            {
+                // 如果遇到换行符，从下一行开始
+                if (data->Buf[pos] == '\n')
+                {
+                    lineStart = pos + 1;
+                    pos++;
+                    continue;
+                }
+                
+                // 找到当前行的结束位置（下一个换行符或文本结尾）
+                int lineEnd = pos;
+                while (lineEnd < data->BufTextLen && data->Buf[lineEnd] != '\n')
+                {
+                    lineEnd++;
+                }
+                
+                // 计算当前行的宽度
+                if (lineEnd > lineStart)
+                {
+                    // 获取当前行的文本
+                    std::string lineText(data->Buf + lineStart, lineEnd - lineStart);
+                    
+                    // 使用 ImGui::CalcTextSize 计算文本宽度
+                    ImVec2 textSize = ImGui::CalcTextSize(lineText.c_str());
+                    
+                    // 如果行宽度超过限制，需要插入换行
+                    if (textSize.x > wrapWidth)
+                    {
+                        // 从行尾向前查找合适的断行位置（优先在空格处断开）
+                        int breakPos = lineEnd;
+                        
+                        // 尝试在空格处断开
+                        for (int i = lineEnd - 1; i > lineStart; i--)
+                        {
+                            if (data->Buf[i] == ' ' || data->Buf[i] == '\t')
+                            {
+                                // 检查这个位置之前的文本宽度
+                                std::string testLine(data->Buf + lineStart, i - lineStart);
+                                ImVec2 testSize = ImGui::CalcTextSize(testLine.c_str());
+                                
+                                if (testSize.x <= wrapWidth)
+                                {
+                                    breakPos = i + 1; // 在空格后插入换行
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // 如果没找到合适的空格位置，就在超出位置直接断开
+                        if (breakPos == lineEnd)
+                        {
+                            // 二分查找合适的断行位置
+                            int left = lineStart;
+                            int right = lineEnd;
+                            while (left < right)
+                            {
+                                int mid = (left + right) / 2;
+                                std::string testLine(data->Buf + lineStart, mid - lineStart);
+                                ImVec2 testSize = ImGui::CalcTextSize(testLine.c_str());
+                                
+                                if (testSize.x <= wrapWidth)
+                                {
+                                    left = mid + 1;
+                                }
+                                else
+                                {
+                                    right = mid;
+                                }
+                            }
+                            breakPos = (left > lineStart) ? left : lineStart + 1;
+                        }
+                        
+                        // 在 breakPos 位置插入换行符
+                        if (breakPos > lineStart && breakPos <= lineEnd)
+                        {
+                            data->InsertChars(breakPos, "\n");
+                            needsUpdate = true;
+                            // 更新位置，继续处理下一行
+                            pos = breakPos + 1;
+                            lineStart = pos;
+                            continue;
+                        }
+                    }
+                }
+                
+                // 移动到下一行
+                pos = lineEnd;
+                if (pos < data->BufTextLen && data->Buf[pos] == '\n')
+                {
+                    pos++;
+                    lineStart = pos;
+                }
+            }
+            
+            // 如果插入了换行符，需要更新缓冲区大小
+            if (needsUpdate)
+            {
+                data->BufDirty = true;
+            }
         }
         
         return 0;
@@ -2890,12 +3018,13 @@ namespace WordReminder
                         height = (std::max)(minH, (std::min)(maxH, height));
                         
                         // 绘制可编辑的 InputTextMultiline，带回调
+                        // 使用 -1 让 ImGui 自动使用可用宽度，并禁用水平滚动强制换行
                         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 4));
                         ImGui::InputTextMultiline(
                             idm.c_str(),
                             textBuffers[i].data(),
                             textBuffers[i].size(),
-                            ImVec2(-1, height),
+                            ImVec2(-1.0f, height),
                             ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_NoHorizontalScroll,
                             StaticTextEditCallback
                         );
