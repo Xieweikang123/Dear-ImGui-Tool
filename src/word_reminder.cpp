@@ -59,6 +59,9 @@ namespace WordReminder
     // 当前正在处理的 Item ID（用于回调函数中识别是哪个控件）
     static thread_local std::string* g_currentItemIdPtr = nullptr;
     
+    // 用于防止自动换行死循环：记录每个控件上次处理的文本内容
+    static std::map<std::string, std::string> g_LastProcessedText;
+    
     // ImGui InputText 回调函数：自动换行 + 持续更新选中文字缓存
     static int StaticTextEditCallback(ImGuiInputTextCallbackData* data)
     {
@@ -105,27 +108,50 @@ namespace WordReminder
             }
         }
         
-        // 第二部分：自动换行处理
-        // 只在文本内容变化时处理，避免死循环
+        // 第二部分：自动换行处理（按字符数限制）
+        // 只在文本内容真正变化时处理，避免死循环
         if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways && data->Buf && data->BufTextLen > 0)
         {
-            // 获取可用宽度（减去内边距）
-            float availableWidth = ImGui::GetContentRegionAvail().x;
-            if (availableWidth <= 0.0f) availableWidth = 400.0f;
+            // 获取当前文本内容
+            std::string currentText(data->Buf, data->BufTextLen);
             
-            // 减去左右内边距（FramePadding）
-            ImGuiStyle& style = ImGui::GetStyle();
-            float framePaddingX = style.FramePadding.x * 2.0f;
-            float wrapWidth = availableWidth - framePaddingX - 20.0f; // 额外留一些边距
-            if (wrapWidth <= 0.0f) wrapWidth = 300.0f;
+            // 检查是否有对应的 Item ID
+            if (!g_currentItemIdPtr || g_currentItemIdPtr->empty())
+            {
+                return 0;
+            }
             
-            // 获取字体大小用于计算文本宽度
-            float fontSize = ImGui::GetFontSize();
+            const std::string& itemId = *g_currentItemIdPtr;
+            
+            // 检查文本是否与上次处理的内容相同，如果相同则跳过（避免死循环）
+            auto it = g_LastProcessedText.find(itemId);
+            if (it != g_LastProcessedText.end() && it->second == currentText)
+            {
+                return 0; // 文本未变化，跳过处理
+            }
+            
+            // 字符数限制（每行最多70个字符，按 UTF-8 字符计算）
+            const int maxCharsPerLine = 70;
+            bool needsUpdate = false;
+            
+            // UTF-8 辅助函数：检查字节是否是 UTF-8 字符的起始字节
+            auto IsUtf8CharStart = [](unsigned char c) -> bool {
+                return (c & 0x80) == 0 || (c & 0xC0) == 0xC0; // ASCII 或 UTF-8 多字节字符的起始字节
+            };
+            
+            // UTF-8 辅助函数：向前查找最近的字符边界
+            auto FindCharBoundary = [&IsUtf8CharStart](const char* buf, int pos, int start) -> int {
+                // 向前查找，直到找到字符边界
+                while (pos > start && !IsUtf8CharStart((unsigned char)buf[pos]))
+                {
+                    pos--;
+                }
+                return pos;
+            };
             
             // 遍历文本，按行处理
             int lineStart = 0;
             int pos = 0;
-            bool needsUpdate = false;
             
             while (pos < data->BufTextLen)
             {
@@ -144,72 +170,107 @@ namespace WordReminder
                     lineEnd++;
                 }
                 
-                // 计算当前行的宽度
-                if (lineEnd > lineStart)
+                // 计算当前行的字符数（按 UTF-8 字符计算，不是字节数）
+                int charCount = 0;
+                int charPos = lineStart;
+                while (charPos < lineEnd)
                 {
-                    // 获取当前行的文本
-                    std::string lineText(data->Buf + lineStart, lineEnd - lineStart);
-                    
-                    // 使用 ImGui::CalcTextSize 计算文本宽度
-                    ImVec2 textSize = ImGui::CalcTextSize(lineText.c_str());
-                    
-                    // 如果行宽度超过限制，需要插入换行
-                    if (textSize.x > wrapWidth)
+                    if ((data->Buf[charPos] & 0x80) == 0)
                     {
-                        // 从行尾向前查找合适的断行位置（优先在空格处断开）
-                        int breakPos = lineEnd;
-                        
-                        // 尝试在空格处断开
-                        for (int i = lineEnd - 1; i > lineStart; i--)
+                        // ASCII 字符，1 字节
+                        charPos++;
+                        charCount++;
+                    }
+                    else if ((data->Buf[charPos] & 0xE0) == 0xC0)
+                    {
+                        // UTF-8 2 字节字符
+                        charPos += 2;
+                        charCount++;
+                    }
+                    else if ((data->Buf[charPos] & 0xF0) == 0xE0)
+                    {
+                        // UTF-8 3 字节字符（中文等）
+                        charPos += 3;
+                        charCount++;
+                    }
+                    else if ((data->Buf[charPos] & 0xF8) == 0xF0)
+                    {
+                        // UTF-8 4 字节字符
+                        charPos += 4;
+                        charCount++;
+                    }
+                    else
+                    {
+                        // 无效的 UTF-8 序列，跳过
+                        charPos++;
+                        charCount++;
+                    }
+                }
+                
+                // 如果字符数超过限制，需要插入换行
+                if (charCount > maxCharsPerLine)
+                {
+                    // 找到第 maxCharsPerLine 个字符的位置（按 UTF-8 字符计算）
+                    int targetCharCount = 0;
+                    int breakPos = lineStart;
+                    while (breakPos < lineEnd && targetCharCount < maxCharsPerLine)
+                    {
+                        if ((data->Buf[breakPos] & 0x80) == 0)
                         {
-                            if (data->Buf[i] == ' ' || data->Buf[i] == '\t')
-                            {
-                                // 检查这个位置之前的文本宽度
-                                std::string testLine(data->Buf + lineStart, i - lineStart);
-                                ImVec2 testSize = ImGui::CalcTextSize(testLine.c_str());
-                                
-                                if (testSize.x <= wrapWidth)
-                                {
-                                    breakPos = i + 1; // 在空格后插入换行
-                                    break;
-                                }
-                            }
+                            breakPos++;
+                            targetCharCount++;
                         }
-                        
-                        // 如果没找到合适的空格位置，就在超出位置直接断开
-                        if (breakPos == lineEnd)
+                        else if ((data->Buf[breakPos] & 0xE0) == 0xC0)
                         {
-                            // 二分查找合适的断行位置
-                            int left = lineStart;
-                            int right = lineEnd;
-                            while (left < right)
-                            {
-                                int mid = (left + right) / 2;
-                                std::string testLine(data->Buf + lineStart, mid - lineStart);
-                                ImVec2 testSize = ImGui::CalcTextSize(testLine.c_str());
-                                
-                                if (testSize.x <= wrapWidth)
-                                {
-                                    left = mid + 1;
-                                }
-                                else
-                                {
-                                    right = mid;
-                                }
-                            }
-                            breakPos = (left > lineStart) ? left : lineStart + 1;
+                            breakPos += 2;
+                            targetCharCount++;
                         }
-                        
-                        // 在 breakPos 位置插入换行符
-                        if (breakPos > lineStart && breakPos <= lineEnd)
+                        else if ((data->Buf[breakPos] & 0xF0) == 0xE0)
                         {
-                            data->InsertChars(breakPos, "\n");
-                            needsUpdate = true;
-                            // 更新位置，继续处理下一行
-                            pos = breakPos + 1;
-                            lineStart = pos;
-                            continue;
+                            breakPos += 3;
+                            targetCharCount++;
                         }
+                        else if ((data->Buf[breakPos] & 0xF8) == 0xF0)
+                        {
+                            breakPos += 4;
+                            targetCharCount++;
+                        }
+                        else
+                        {
+                            breakPos++;
+                            targetCharCount++;
+                        }
+                    }
+                    
+                    // 确保 breakPos 在字符边界上
+                    breakPos = FindCharBoundary(data->Buf, breakPos, lineStart);
+                    
+                    // 尝试在空格处断开（向前查找最多10个字符）
+                    int searchStart = (std::max)(lineStart, breakPos - 30); // 向前查找最多30字节
+                    for (int i = breakPos; i > searchStart; i--)
+                    {
+                        // 确保在字符边界上
+                        if (IsUtf8CharStart((unsigned char)data->Buf[i]) && 
+                            i < data->BufTextLen && (data->Buf[i] == ' ' || data->Buf[i] == '\t'))
+                        {
+                            breakPos = i + 1; // 在空格后插入换行
+                            // 确保在字符边界上
+                            breakPos = FindCharBoundary(data->Buf, breakPos, lineStart);
+                            break;
+                        }
+                    }
+                    
+                    // 确保断行位置有效且在字符边界上
+                    if (breakPos > lineStart && breakPos < lineEnd)
+                    {
+                        // 再次确保在字符边界上
+                        breakPos = FindCharBoundary(data->Buf, breakPos, lineStart);
+                        data->InsertChars(breakPos, "\n");
+                        needsUpdate = true;
+                        // 更新位置，继续处理下一行
+                        pos = breakPos + 1;
+                        lineStart = pos;
+                        continue;
                     }
                 }
                 
@@ -226,6 +287,14 @@ namespace WordReminder
             if (needsUpdate)
             {
                 data->BufDirty = true;
+                // 更新最后处理的文本内容（使用更新后的文本）
+                std::string updatedText(data->Buf, data->BufTextLen);
+                g_LastProcessedText[itemId] = updatedText;
+            }
+            else
+            {
+                // 即使没有插入换行，也记录当前文本，避免重复处理
+                g_LastProcessedText[itemId] = currentText;
             }
         }
         
